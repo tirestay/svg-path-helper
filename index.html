@@ -1,0 +1,3071 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SVGPath Helper · 交互式 SVG 路径编辑器与可视化工作台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background-color: #0b0f19;
+      color: #f1f5f9;
+      overflow-x: hidden;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.6);
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(71, 85, 105, 0.6);
+      border-radius: 3px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: rgba(99, 102, 241, 0.8);
+    }
+    .canvas-grid {
+      background-size: 20px 20px;
+      background-image: 
+        linear-gradient(to right, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    }
+    .canvas-grid-major {
+      background-size: 100px 100px;
+      background-image: 
+        linear-gradient(to right, rgba(99, 102, 241, 0.12) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(99, 102, 241, 0.12) 1px, transparent 1px);
+    }
+    /* 画布右下角「显示辅助网格」图标开关（与缩放按钮同列）：仍用 sr-only checkbox 作真源，
+       脚本 1 与 PART C 各自的 change 处理器一行都不用改。选中 = fa-table 亮色；
+       未选 = fa-tv 灰色并压一条斜杠（FA6 free 没有“fa-tv-slash”，用伪元素叠加） */
+    .grid-toggle .grid-off { display: none; position: relative; }
+    .grid-toggle input:not(:checked) ~ .grid-on { display: none; }
+    .grid-toggle input:not(:checked) ~ .grid-off { display: inline-flex; }
+    .grid-toggle:focus-within { border-color: rgba(129, 140, 248, 0.7); }
+    .grid-slash {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 1.75rem;
+      height: 2px;
+      border-radius: 1px;
+      background: #64748b;
+      transform: translate(-50%, -50%) rotate(-45deg);
+      pointer-events: none;
+    }
+    #mainSvg {
+      --r-anchor-hover: 7;
+      --r-ctrl-hover: 6;
+      cursor: grab;   /* 空白处可拖拽平移；锚点/控制点各自的 cursor:move 是类规则，仍优先于根元素的继承值 */
+    }
+    #mainSvg.panning, #mainSvg.panning * {
+      cursor: grabbing;   /* 平移途中扫过锚点也不变回 move（后代选择器特异性高于 .point-anchor 的 move） */
+    }
+    .handle-line {
+      stroke: #6366f1;
+      stroke-width: 1.5;
+      stroke-dasharray: 3 3;
+    }
+    .point-anchor {
+      fill: #38bdf8;
+      stroke: #0284c7;
+      stroke-width: 2;
+      cursor: move;
+      transition: r 0.15s ease, fill 0.15s ease;
+    }
+    .point-anchor:hover, .point-anchor.active {
+      fill: #38bdf8;
+      r: var(--r-anchor-hover, 7);
+      stroke: #ffffff;
+      stroke-width: 2.5;
+    }
+    .point-ctrl {
+      fill: #f43f5e;
+      stroke: #be123c;
+      stroke-width: 2;
+      cursor: move;
+      transition: r 0.15s ease, fill 0.15s ease;
+    }
+    .point-ctrl:hover, .point-ctrl.active {
+      fill: #fb7185;
+      r: var(--r-ctrl-hover, 6);
+      stroke: #ffffff;
+    }
+    .point-ctrl-q {
+      fill: #eab308;
+      stroke: #a16207;
+      stroke-width: 2;
+      cursor: move;
+    }
+    .point-ctrl-q:hover, .point-ctrl-q.active {
+      fill: #fde047;
+      r: var(--r-ctrl-hover, 6);
+      stroke: #ffffff;
+    }
+    /* 分段按钮组（坐标/间隔）：参考规范化输出的胶囊样式，暗色主题下用靛蓝高亮 */
+    .seg-btn {
+      color: #94a3b8;
+      background: transparent;
+      border: 1px solid transparent;
+      transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+    }
+    .seg-btn:hover { color: #e2e8f0; }
+    .seg-btn.seg-active {
+      color: #a5b4fc;
+      background: rgba(99, 102, 241, 0.16);
+      border-color: rgba(129, 140, 248, 0.55);
+      font-weight: 600;
+    }
+    /* 开关（展开命令）：参考图样的胶囊拨动开关，暗色主题下选中靛蓝 */
+    .switch-track {
+      position: relative;
+      flex: none;
+      width: 36px;
+      height: 20px;
+      border-radius: 9999px;
+      background: #334155;
+      border: 1px solid rgba(100, 116, 139, 0.4);
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+    .switch-knob {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #cbd5e1;
+      transition: transform 0.15s ease, background-color 0.15s ease;
+    }
+    input:checked + .switch-track {
+      background: rgba(99, 102, 241, 0.5);
+      border-color: rgba(129, 140, 248, 0.6);
+    }
+    input:checked + .switch-track .switch-knob {
+      transform: translateX(16px);
+      background: #ffffff;
+    }
+    /* 画布右下角“在选中段之后追增”工具列（M/L/C/Q）：与缩放按钮同族，
+       激活态用琥珀高亮，提示用户当前处于“点击画布落点”的待点选状态 */
+    #mainSvg.add-pending { cursor: crosshair; }   /* 只改根光标，锚点/控制点各自的 move 仍保留 */
+    .dbg-add-btn.add-active {
+      border-color: rgba(251, 191, 36, 0.8) !important;
+      background: rgba(251, 191, 36, 0.18) !important;
+      color: #fde68a !important;
+    }
+  </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden antialiased selection:bg-indigo-500 selection:text-white">
+
+<!-- 顶部导航栏 -->
+<header class="h-16 border-b border-slate-800/80 bg-slate-900/90 backdrop-blur px-6 flex items-center justify-between sticky top-0 z-50">
+  <div class="flex items-center gap-3">
+    <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-sky-500 to-rose-500 flex items-center justify-center shadow-lg shadow-indigo-500/20 text-white font-black text-xl">
+      <i class="fa-solid fa-retweet text-base"></i>
+    </div>
+    <div>
+      <div class="flex items-center gap-2">
+        <h1 class="text-base font-bold text-white tracking-wide">SVGPath Helper</h1>
+        <span class="px-2 py-0.5 text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-full">v1.0 Master</span>
+      </div>
+      <p class="text-xs text-slate-400">交互式 SVG 路径编辑器 · 可视化工作台</p>
+    </div>
+  </div>
+
+  <!-- 顶部动作条 -->
+  <div class="flex items-center gap-3">
+    <button id="soundToggleBtn" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 border border-slate-700 transition flex items-center gap-1.5">
+      <i class="fa-solid fa-volume-high text-indigo-400" id="soundIcon"></i>
+      <span id="soundText">音效开</span>
+    </button>
+    <button id="resetViewBtn" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 border border-slate-700 transition flex items-center gap-1.5">
+      <i class="fa-solid fa-arrows-rotate text-sky-400"></i> 重置画布
+    </button>
+    <button id="exportSvgBtn" class="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-500 hover:to-sky-500 text-xs font-semibold text-white shadow-md shadow-indigo-600/20 transition flex items-center gap-1.5">
+      <i class="fa-solid fa-download"></i> 导出 SVG
+    </button>
+  </div>
+</header>
+
+<!-- 主体工作区：min-h-0 让 main 能在 body 的 h-screen 内收缩（否则会被最高列撑高、画布溢出视口），整页锁死不滚动，各列靠自身 overflow-y-auto 内部滚动 -->
+<main class="flex-1 min-h-0 flex overflow-hidden">
+
+  <!-- 左侧：预设与图形控制面板 -->
+  <aside class="w-80 border-r border-slate-800/80 bg-slate-900/60 p-4 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+
+    <!-- 预设图形选择：点选后把路径写入下方 d 源，由 d 源统一驱动画布与诊断 -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
+      <div class="flex items-center justify-between mb-3">
+          <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+            <i class="fa-solid fa-shapes text-indigo-400"></i> 精选图形预设
+          </span>
+        <span class="text-[10px] text-slate-400">点选写入 d 源</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2" id="presetButtons">
+        <button class="preset-btn px-2.5 py-2 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 hover:border-indigo-500/50 border border-slate-700 text-xs text-slate-300 text-left transition flex items-center gap-2" data-preset="heart">
+          <i class="fa-solid fa-heart text-rose-400"></i> 爱心曲线
+        </button>
+        <button class="preset-btn px-2.5 py-2 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 hover:border-indigo-500/50 border border-slate-700 text-xs text-slate-300 text-left transition flex items-center gap-2" data-preset="wave">
+          <i class="fa-solid fa-water text-sky-400"></i> 动态波浪
+        </button>
+        <button class="preset-btn px-2.5 py-2 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 hover:border-indigo-500/50 border border-slate-700 text-xs text-slate-300 text-left transition flex items-center gap-2" data-preset="star">
+          <i class="fa-solid fa-star text-amber-400"></i> 五角星
+        </button>
+        <button class="preset-btn px-2.5 py-2 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 hover:border-indigo-500/50 border border-slate-700 text-xs text-slate-300 text-left transition flex items-center gap-2" data-preset="bubble">
+          <i class="fa-solid fa-comment-dots text-emerald-400"></i> 对话气泡
+        </button>
+        <button class="preset-btn px-2.5 py-2 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 hover:border-indigo-500/50 border border-slate-700 text-xs text-slate-300 text-left transition flex items-center gap-2" data-preset="badge">
+          <i class="fa-solid fa-shield-halved text-purple-400"></i> 盾牌徽章
+        </button>
+        <button class="preset-btn px-2.5 py-2 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 hover:border-indigo-500/50 border border-slate-700 text-xs text-slate-300 text-left transition flex items-center gap-2" data-preset="drop">
+          <i class="fa-solid fa-droplet text-blue-400"></i> 流线水滴
+        </button>
+        <button class="preset-btn px-2.5 py-2 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 hover:border-indigo-500/50 border border-slate-700 text-xs text-slate-300 text-left transition flex items-center gap-2" data-preset="circle">
+          <i class="fa-solid fa-bezier-curve text-blue-400"></i> 圆弧标志
+        </button>
+        <button class="preset-btn px-2.5 py-2 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 hover:border-indigo-500/50 border border-slate-700 text-xs text-slate-300 text-left transition flex items-center gap-2" data-preset="rect">
+          <i class="fa-solid fa-square text-blue-400"></i> 圆角矩形
+        </button>
+      </div>
+    </div>
+
+    <!-- 路径调试与诊断：输入即解析，与画布同源 -->
+    <div class="bg-slate-900/90 border border-indigo-500/25 rounded-xl p-3.5 space-y-2.5">
+      <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+            <i class="fa-solid fa-magnifying-glass-chart text-indigo-400"></i> 路径录入
+          </span>
+        <span class="text-[10px] text-slate-500">输入即解析</span>
+      </div>
+      <textarea id="dbgSource" rows="5" spellcheck="false" placeholder="粘贴或编辑 path 的 d 属性（支持 M L H V C S Q T A Z 的绝对与相对形式）"
+                class="w-full px-2.5 py-2 rounded-lg bg-slate-950 border border-slate-700 text-emerald-300 font-mono text-[11px] leading-relaxed focus:outline-none focus:border-indigo-500 resize-y break-all"></textarea>
+      <div id="dbgDiagnostics" class="space-y-1.5 max-h-44 overflow-y-auto pr-1 custom-scrollbar"></div>
+    </div>
+
+    <!-- 样式与渲染选项 -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-3">
+        <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+          <i class="fa-solid fa-palette text-sky-400"></i> 显示配置
+        </span>
+
+      <div class="space-y-2 text-xs">
+        <!-- 填充开关：选中后画布按「填充颜色」填充，取消时只显示路径描边（fill=none）-->
+        <div class="flex items-center justify-between">
+          <label class="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none">
+            <input type="checkbox" id="fillEnabledCheck" checked class="rounded border-slate-700 text-indigo-600 focus:ring-0">
+            填充颜色
+          </label>
+          <div class="flex items-center gap-2">
+            <input type="color" id="fillColorInput" value="#6366f1" class="w-6 h-6 rounded bg-transparent border-0 cursor-pointer">
+            <input type="text" id="fillColorText" value="rgba(99, 102, 241, 0.25)" class="w-36 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-200 text-[11px]">
+          </div>
+        </div>
+
+        <!-- 描边色 -->
+        <div class="flex items-center justify-between">
+          <label class="text-slate-400">描边颜色</label>
+          <div class="flex items-center gap-2">
+            <input type="color" id="strokeColorInput" value="#38bdf8" class="w-6 h-6 rounded bg-transparent border-0 cursor-pointer">
+            <input type="text" id="strokeColorText" value="#38bdf8" class="w-36 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-200 text-[11px]">
+          </div>
+        </div>
+
+        <!-- 描边粗细：上方数字输入框、下方进度条，两者双向镜像 -->
+        <div class="space-y-1 pt-1">
+          <div class="flex items-center justify-between text-slate-400">
+            <span>描边粗细 (Stroke Width)</span>
+            <span class="flex items-center gap-1">
+              <input type="number" id="strokeWidthInput" min="0" max="16" step="0.1" value="3"
+                     class="w-16 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-mono text-right">
+              <span class="text-slate-500">px</span>
+            </span>
+          </div>
+          <input type="range" id="strokeWidthRange" min="0" max="16" step="0.1" value="3" class="w-full accent-indigo-500 bg-slate-800">
+        </div>
+      </div>
+    </div>
+
+    <!-- 画布与网格辅助 -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
+        <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+          <i class="fa-solid fa-border-all text-emerald-400"></i> 操作配置
+        </span>
+      <div class="grid grid-cols-1 gap-2 text-xs">
+        <!-- 角度调整：上方数字输入框、下方进度条（中间 0，左右 ±180）。
+             值一变就把图形绕自身中心旋转，烘焙进节点与 d 源（不是视图变换） -->
+        <div class="space-y-1 pt-1">
+          <div class="flex items-center justify-between text-slate-400">
+            <span title="绕当前图形的包围盒中心旋转，结果会写进路径数据与导出代码">
+              角度调整 (Rotation)
+            </span>
+            <span class="flex items-center gap-1">
+              <input type="number" id="rotationInput" min="-180" max="180" step="1" value="0"
+                     class="w-16 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-mono text-right">
+              <span class="text-slate-500">°</span>
+            </span>
+          </div>
+          <input type="range" id="rotationRange" min="-180" max="180" step="1" value="0" class="w-full accent-indigo-500 bg-slate-800">
+          <div class="flex justify-between text-[10px] text-slate-500 font-mono">
+            <span>-180°</span><span>0°</span><span>180°</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 特性技术指标卡片 -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3 text-[11px] text-slate-400 space-y-1.5">
+      <div class="flex items-center justify-between text-slate-300 font-medium">
+        <span>算法核心</span>
+        <span class="text-indigo-400">Bézier Spline Engine</span>
+      </div>
+      <div class="flex items-center justify-between">
+        <span>坐标系分辨率</span>
+        <span class="font-mono text-slate-300">0.1 subpixel</span>
+      </div>
+      <div class="flex items-center justify-between">
+        <span>音效引擎</span>
+        <span class="text-emerald-400">Web Audio Oscillator</span>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- 中间：交互式 SVG 画布 -->
+  <section class="flex-1 flex flex-col gap-3 bg-slate-950 relative overflow-hidden">
+
+    <!-- 画布顶部信息状态栏 -->
+    <div class="h-10 border-b border-slate-800/80 bg-slate-900/70 px-4 flex items-center justify-between text-xs text-slate-400">
+      <div class="flex items-center gap-4">
+          <span class="flex items-center gap-1">
+            <i class="fa-solid fa-crosshairs text-sky-400"></i> 视图尺寸: <span id="viewSizeText" class="text-slate-200 font-mono font-medium">600 × 600</span>
+          </span>
+        <span class="flex items-center gap-1">
+            <i class="fa-solid fa-location-dot text-rose-400"></i> 当前光标: <span id="cursorPos" class="text-slate-200 font-mono font-medium">X: 0, Y: 0</span>
+          </span>
+        <span class="flex items-center gap-1">
+            <i class="fa-solid fa-circle-nodes text-indigo-400"></i> 节点数: <span id="nodeCountText" class="text-slate-200 font-mono font-medium">4</span>
+          </span>
+      </div>
+      <div class="text-[11px] text-slate-500">
+        按住鼠标左键可直接拖拽锚点（蓝点）与控制手柄（红/黄点）
+      </div>
+    </div>
+
+    <!-- 路径信息指标：与画布在中间列纵向排列（section 的 gap-3 = 12px），两者一起撑满区域；固定显示，不随路径有无隐现 -->
+    <div id="dbgSummaryCard" class="mx-4 shrink-0 bg-slate-900/90 border border-slate-800 rounded-xl p-3.5">
+      <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+            <i class="fa-solid fa-gauge-high text-emerald-400"></i> 路径信息
+          </span>
+        <span class="text-[10px] text-slate-500">解析式计算</span>
+      </div>
+      <!-- 宽列里 2 列会把格位拉成两条长格，改为响应式 4 列 -->
+      <div id="dbgSummary" class="grid grid-cols-2 md:grid-cols-4 gap-1.5 text-[11px]"></div>
+    </div>
+
+    <!-- 画布容器：flex-1 吃掉路径信息之外的剩余高度撑满中间区域；min-h-0 保证窗口高度不足时可收缩而不是顶出兄弟卡片。上下间距由 section 的 gap-3 提供，底部 mb-4 留呼吸位。默认 align-items:stretch 让 canvasContainer 高度充满（不写 items-center，否则无固定高的画布会塔陷） -->
+    <div class="flex-1 min-h-0 flex mx-4 mb-4 relative overflow-hidden select-none" id="canvasWrapper">
+
+      <!-- 实际可交互 SVG 画布：宽高均随容器拉伸（不再固定 600 高）；viewBox 由 preserveAspectRatio 居中适配 -->
+      <div class="relative w-full h-full rounded-2xl border border-slate-700/70 shadow-2xl bg-slate-900/90 overflow-hidden canvas-grid canvas-grid-major" id="canvasContainer">
+
+        <svg id="mainSvg" viewBox="0 0 600 600" class="w-full h-full">
+          <!-- 坐标辅助轴（按 0–600 用户坐标绘制，取景缩放后不再适用，需隐退） -->
+          <g id="axisGroup">
+            <line x1="0" y1="300" x2="600" y2="300" stroke="rgba(255,255,255,0.06)" stroke-width="1" />
+            <line x1="300" y1="0" x2="300" y2="600" stroke="rgba(255,255,255,0.06)" stroke-width="1" />
+          </g>
+
+          <!-- 控制手柄虚线层 -->
+          <g id="handlesGroup"></g>
+
+          <!-- 检查器叠加层：圆弧所在椭圆与圆心（置于路径下方） -->
+          <g id="dbgUnderlay" pointer-events="none"></g>
+
+          <!-- 核心渲染路径 -->
+          <path id="renderedPath" d="" fill="rgba(99, 102, 241, 0.25)" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+
+          <!-- 控制点与锚点图元层（由编辑器绘制，同时也是可拖拽的命中区） -->
+          <g id="pointsGroup"></g>
+
+          <!-- 检查器叠加层：高亮线段 / 锚点 / 控制点 / 标注（置于最上） -->
+          <g id="dbgOverlay" pointer-events="none"></g>
+
+          <!-- 追增待点选预览层：从选中段终点到当前光标的引导虚线与落点（独立于叠加层，不被 drawActive 清空） -->
+          <g id="dbgAddPreview" pointer-events="none"></g>
+        </svg>
+
+      </div>
+
+      <!-- 画布右下角手动取景：辅助网格开关 + 放大 / 缩小 / 适配当前窗口
+           （缩放三按钮只改 viewBox；网格开关只切 CSS 背景，都不动 d 源与节点） -->
+      <div class="absolute bottom-3 right-3 z-10 flex flex-col gap-1.5" id="dbgZoomButtons">
+        <!-- 在选中段之后追增（参考 insert after）：取选中段终点为新段起点，进入待点选状态后点击画布落点 -->
+        <button type="button" class="dbg-add-btn w-10 h-10 rounded-lg bg-slate-800/90 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 hover:border-slate-600 active:scale-95 transition shadow-lg flex items-center justify-center font-mono text-sm font-bold text-sky-300" data-add-type="M" title="移动路径：从选中段终点新开一个子路径">
+          M
+        </button>
+        <button type="button" class="dbg-add-btn w-10 h-10 rounded-lg bg-slate-800/90 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 hover:border-slate-600 active:scale-95 transition shadow-lg flex items-center justify-center font-mono text-sm font-bold" data-add-type="L" title="添加直线：以选中段终点为起点">
+          L
+        </button>
+        <button type="button" class="dbg-add-btn w-10 h-10 rounded-lg bg-slate-800/90 border border-indigo-700/50 text-indigo-300 hover:text-white hover:bg-indigo-900/60 active:scale-95 transition shadow-lg flex items-center justify-center font-mono text-sm font-bold" data-add-type="C" title="添加三次贝塞尔：以选中段终点为起点">
+          C
+        </button>
+        <button type="button" class="dbg-add-btn w-10 h-10 rounded-lg bg-slate-800/90 border border-amber-700/50 text-amber-300 hover:text-white hover:bg-amber-900/60 active:scale-95 transition shadow-lg flex items-center justify-center font-mono text-sm font-bold" data-add-type="Q" title="添加二次贝塞尔：以选中段终点为起点">
+          Q
+        </button>
+        <button type="button" class="dbg-add-btn w-10 h-10 rounded-lg bg-slate-800/90 border border-emerald-700/50 text-emerald-300 hover:text-white hover:bg-emerald-900/60 active:scale-95 transition shadow-lg flex items-center justify-center font-mono text-sm font-bold" data-add-type="Z" title="添加 Z 闭合路径：闭合选中段所在子路径（无需落点）">
+          Z
+        </button>
+        <div class="h-px bg-slate-700/70 my-0.5"></div>
+        <label class="grid-toggle w-10 h-10 rounded-lg bg-slate-800/90 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 hover:border-slate-600 active:scale-95 transition shadow-lg flex items-center justify-center cursor-pointer select-none"
+               title="显示辅助网格 (Grid)">
+          <input type="checkbox" id="gridVisibleCheck" checked class="sr-only">
+          <i class="fa-solid fa-table text-xl grid-on"></i>
+          <span class="grid-off items-center justify-center">
+            <i class="fa-solid fa-table text-xl text-slate-500"></i>
+            <span class="grid-slash"></span>
+          </span>
+        </label>
+        <label class="grid-toggle w-10 h-10 rounded-lg bg-slate-800/90 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 hover:border-slate-600 active:scale-95 transition shadow-lg flex items-center justify-center cursor-pointer select-none"
+               title="网格吸附 (Snap 10)">
+          <input type="checkbox" id="gridSnapCheck" checked class="sr-only">
+          <i class="fa-solid fa-magnet text-xl grid-on"></i>
+          <span class="grid-off items-center justify-center">
+            <i class="fa-solid fa-magnet text-xl text-slate-500"></i>
+            <span class="grid-slash"></span>
+          </span>
+        </label>
+        <button type="button" id="dbgZoomInBtn" title="放大"
+                class="w-10 h-10 rounded-lg bg-slate-800/90 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 hover:border-slate-600 active:scale-95 transition shadow-lg flex items-center justify-center">
+          <i class="fa-solid fa-magnifying-glass-plus text-xl"></i>
+        </button>
+        <button type="button" id="dbgZoomOutBtn" title="缩小"
+                class="w-10 h-10 rounded-lg bg-slate-800/90 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 hover:border-slate-600 active:scale-95 transition shadow-lg flex items-center justify-center">
+          <i class="fa-solid fa-magnifying-glass-minus text-xl"></i>
+        </button>
+        <button type="button" id="dbgZoomFitBtn" title="适配当前窗口"
+                class="w-10 h-10 rounded-lg bg-slate-800/90 border border-slate-700 text-slate-300 hover:text-white hover:bg-slate-700 hover:border-slate-600 active:scale-95 transition shadow-lg flex items-center justify-center">
+          <i class="fa-solid fa-expand text-xl"></i>
+        </button>
+      </div>
+
+      <!-- 画布下方居中浮动：叠加层显示开关（原画布下方文档流卡片迁入，样式与操作记录面板同族；开关仍靠 id 访问，搬动 DOM 不影响处理器） -->
+      <div class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 w-[480px] max-w-[92%] grid grid-cols-3 justify-items-start gap-x-5 gap-y-1.5 rounded-xl bg-slate-800/90 border border-slate-700 shadow-lg backdrop-blur-sm px-4 py-2.5 text-[11px] text-slate-300 whitespace-nowrap" id="dbgOverlayPanel">
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" id="showHandlesCheck" checked class="sr-only">
+          <span class="switch-track"><span class="switch-knob"></span></span>显示控制手柄
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" id="dbgOptLabels" class="sr-only">
+          <span class="switch-track"><span class="switch-knob"></span></span>命令编号
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" id="dbgOptCtrl" class="sr-only">
+          <span class="switch-track"><span class="switch-knob"></span></span>控制点
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" id="dbgOptReflect" class="sr-only">
+          <span class="switch-track"><span class="switch-knob"></span></span>隐式反射点
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" id="dbgOptArc" class="sr-only">
+          <span class="switch-track"><span class="switch-knob"></span></span>圆弧椭圆
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" id="dbgOptAll" class="sr-only">
+          <span class="switch-track"><span class="switch-knob"></span></span>全量标记
+        </label>
+      </div>
+
+      <!-- 画布右上角操作记录：可伸展面板 + 撤销/重做（条目点击 = 跳到该历史状态） -->
+      <div class="absolute top-3 right-3 z-10 w-60 rounded-xl bg-slate-800/90 border border-slate-700 shadow-lg backdrop-blur-sm overflow-hidden" id="dbgHistoryPanel">
+        <div class="flex items-center gap-1 px-2.5 py-2 text-[11px] font-bold text-slate-200">
+          <button type="button" id="dbgHistoryToggle" title="展开 / 收起操作记录" class="flex items-center gap-1.5 hover:text-white transition cursor-pointer">
+            <i class="fa-solid fa-chevron-down text-[9px] text-slate-400 transition-transform" id="dbgHistoryChevron"></i>
+            <i class="fa-solid fa-clock-rotate-left text-sky-400"></i>操作记录
+          </button>
+          <span id="dbgHistoryCount" class="text-[10px] font-normal text-slate-500"></span>
+          <span class="flex-1"></span>
+          <button type="button" id="dbgUndoBtn" title="撤销 (⌘Z)" disabled
+                  class="w-6 h-6 rounded-md text-slate-300 border border-slate-700 hover:text-white hover:bg-slate-700 disabled:opacity-35 disabled:cursor-not-allowed transition flex items-center justify-center">
+            <i class="fa-solid fa-undo text-sm"></i>
+          </button>
+          <button type="button" id="dbgRedoBtn" title="重做 (⌘⇧Z)" disabled
+                  class="w-6 h-6 rounded-md text-slate-300 border border-slate-700 hover:text-white hover:bg-slate-700 disabled:opacity-35 disabled:cursor-not-allowed transition flex items-center justify-center">
+            <i class="fa-solid fa-redo text-sm"></i>
+          </button>
+        </div>
+        <div id="dbgHistoryList" class="hidden max-h-52 overflow-y-auto custom-scrollbar border-t border-slate-700/60 text-[11px]"></div>
+      </div>
+
+    </div>
+
+  </section>
+
+  <!-- 右侧 -->
+  <aside class="w-[450px] border-l border-slate-800/80 bg-slate-900/60 p-4 flex flex-col gap-4 overflow-y-auto custom-scrollbar">
+
+    <!-- 命令表与线段检查器：固定显示，不随路径有无隐现 -->
+    <div id="dbgTableCard" class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-2">
+      <div class="flex items-center justify-between mb-1">
+          <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+            <i class="fa-solid fa-table-list text-sky-400"></i> 命令表（与画布联动）
+          </span>
+        <span class="text-[10px] text-slate-500">改参数 / 删命令</span>
+      </div>
+      <div id="dbgCommandTable" class="max-h-64 overflow-y-auto custom-scrollbar rounded-lg border border-slate-800"></div>
+      <div id="dbgSegmentDetail" class="text-[11px] text-slate-400"></div>
+    </div>
+
+    <!-- 代码导出 -->
+    <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-3">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+          <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+            <i class="fa-solid fa-code text-emerald-400"></i> 规范代码
+          </span>
+      </div>
+
+      <!-- 规范化输出选项：坐标/精度/间隔/展开命令即时作用于下方生成代码 -->
+      <div class="space-y-3">
+        <div>
+          <div class="text-[10px] font-bold text-slate-300 mb-1.5">坐标</div>
+          <div id="dbgCoordMode" data-value="source" class="grid grid-cols-3 gap-1 bg-slate-800/80 border border-slate-700/60 rounded-xl p-1">
+            <button type="button" data-value="source" class="seg-btn seg-active py-1.5 rounded-lg text-[11px]">保持原样</button>
+            <button type="button" data-value="absolute" class="seg-btn py-1.5 rounded-lg text-[11px]">绝对</button>
+            <button type="button" data-value="relative" class="seg-btn py-1.5 rounded-lg text-[11px]">相对</button>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <div class="text-[10px] font-bold text-slate-300 mb-1.5">精度</div>
+            <!-- 自定义暗色下拉：纯 DOM 按钮，选中态存容器 data-value，与分段按钮组同一套契约 -->
+            <div id="dbgPrecision" class="dd relative" data-value="full">
+              <button type="button" class="dd-trigger w-full flex items-center justify-between gap-2 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-200 font-mono hover:border-slate-600 transition">
+                <span class="dd-label">完整精度</span>
+                <i class="fa-solid fa-chevron-down text-[9px] text-slate-400"></i>
+              </button>
+              <div class="dd-panel hidden absolute left-0 right-0 top-full z-30 mt-1 bg-slate-900/95 border border-slate-700 rounded-lg p-1 shadow-2xl space-y-0.5">
+                <button type="button" data-value="full" class="seg-btn seg-active w-full text-left px-2 py-1.5 rounded-md text-[11px]">完整精度</button>
+                <button type="button" data-value="0" class="seg-btn w-full text-left px-2 py-1.5 rounded-md text-[11px] font-mono">0 位</button>
+                <button type="button" data-value="1" class="seg-btn w-full text-left px-2 py-1.5 rounded-md text-[11px] font-mono">1 位</button>
+                <button type="button" data-value="2" class="seg-btn w-full text-left px-2 py-1.5 rounded-md text-[11px] font-mono">2 位</button>
+                <button type="button" data-value="3" class="seg-btn w-full text-left px-2 py-1.5 rounded-md text-[11px] font-mono">3 位</button>
+                <button type="button" data-value="4" class="seg-btn w-full text-left px-2 py-1.5 rounded-md text-[11px] font-mono">4 位</button>
+                <button type="button" data-value="6" class="seg-btn w-full text-left px-2 py-1.5 rounded-md text-[11px] font-mono">6 位</button>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="text-[10px] font-bold text-slate-300 mb-1.5">间隔</div>
+            <div id="dbgSpacing" data-value="space" class="grid grid-cols-3 gap-1 bg-slate-800/80 border border-slate-700/60 rounded-xl p-1">
+              <button type="button" data-value="space" class="seg-btn seg-active py-1.5 rounded-lg text-[11px]">空格</button>
+              <button type="button" data-value="compact" class="seg-btn py-1.5 rounded-lg text-[11px]">紧凑</button>
+              <button type="button" data-value="comma" class="seg-btn py-1.5 rounded-lg text-[11px]">逗号</button>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="text-[10px] font-bold text-slate-300 mb-1.5 flex items-center gap-1">展开命令
+            <i class="fa-solid fa-circle-question text-slate-500 cursor-help" title="打开后 H/V 输出为 L，S/T 输出为 C/Q（生成代码不再含简写命令）；不影响画布与 d 源"></i>
+          </div>
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-slate-300">
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" id="dbgExpandHV" class="sr-only">
+              <span class="switch-track"><span class="switch-knob"></span></span>H 和 V 转为 L
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" id="dbgExpandS" class="sr-only">
+              <span class="switch-track"><span class="switch-knob"></span></span>S 转为 C
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" id="dbgExpandT" class="sr-only">
+              <span class="switch-track"><span class="switch-knob"></span></span>T 转为 Q
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 切换：属于代码输出区的表头，分隔线画在它上方而不是下方 -->
+      <div class="flex items-center border-t border-slate-800 pt-1">
+        <div class="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg text-[10px]">
+          <button class="code-tab-btn active px-2 py-0.5 rounded bg-indigo-600 text-white font-medium" data-tab="path">Path</button>
+          <button class="code-tab-btn px-2 py-0.5 rounded text-slate-400 hover:text-white" data-tab="svg">SVG</button>
+          <button class="code-tab-btn px-2 py-0.5 rounded text-slate-400 hover:text-white" data-tab="react">React</button>
+          <button class="code-tab-btn px-2 py-0.5 rounded text-slate-400 hover:text-white" data-tab="css">CSS Clip</button>
+          <button class="code-tab-btn px-2 py-0.5 rounded text-slate-400 hover:text-white" data-tab="canvas">Canvas</button>
+        </div>
+      </div>
+      <div class="relative">
+        <pre id="codeOutput" class="p-3 bg-slate-950 rounded-lg text-[11px] font-mono text-emerald-400 overflow-x-auto max-h-36 custom-scrollbar border border-slate-800/80 leading-relaxed"></pre>
+        <button id="copyCodeBtn" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[10px] font-medium text-slate-200 border border-slate-700 transition flex items-center gap-1">
+          <i class="fa-solid fa-copy text-indigo-400"></i> 复制
+        </button>
+      </div>
+    </div>
+
+  </aside>
+
+</main>
+
+<!-- 提示浮层 Toast -->
+<div id="toast" class="fixed bottom-6 right-6 transform translate-y-20 opacity-0 pointer-events-none transition duration-300 px-4 py-2.5 rounded-xl bg-slate-800/95 border border-indigo-500/40 text-white text-xs font-semibold shadow-2xl flex items-center gap-2 z-50">
+  <i class="fa-solid fa-circle-check text-emerald-400"></i>
+  <span id="toastMsg">操作成功</span>
+</div>
+
+<script>
+  // ============================================================
+  // 脚本 1：路径编辑器（classic script，顶层符号构成词法全局绑定）
+  // 脚本 2 的 PART C 直接读取本块的 state / renderCanvas / buildPathString /
+  // PRESETS / playTone 等符号，故本块不得改成 type="module"，以下符号不得下沉进 IIFE。
+  //
+  // 分节目录（与维护对应，编号即文中 ===== NN ===== 标记）：
+  //   1. Web Audio 过程化音效引擎 —— playTone / playSnapSound / playAddSound / playDragSound
+  //   2. 状态数据模型与预设路径库 —— state（唯一节点真源）/ PRESETS
+  //   3. 渲染与路径字符串计算 —— renderCanvas（被 PART C 包装回写 d 源）/ renderHandlesAndPoints
+  //   4. 交互式拖拽逻辑 —— 锚点/控制点 mousedown→mousemove→mouseup
+  //   5. 画布空白处拖拽平移（pan）—— 只改 viewBox x/y，不动数据
+  //   6. 跨端代码生成 —— exportPathString（调 DBG.normalize，不回写 d 源）/ renderCodeOutput
+  //   7. 控制事件绑定 —— 预设 / 代码页签与导出格式控件 / 颜色·描边·显示开关
+  //   8. 角度调整 —— setRotation 数据烘焙（详见节内注释，非视图变换）
+  //   9. 复制与导出 / 重置 / 音效开关
+  //  10. Toast 提示与首屏初始化
+  // ============================================================
+
+  // ===== 1. Web Audio 过程化音效引擎 =====
+  let audioCtx = null;
+  let soundEnabled = true;
+
+  function initAudio() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+  }
+
+  function playTone(freq, type = 'sine', duration = 0.08, gainVal = 0.1) {
+    if (!soundEnabled) return;
+    try {
+      initAudio();
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      gain.gain.setValueAtTime(gainVal, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + duration);
+    } catch (e) {}
+  }
+
+  function playSnapSound() {
+    playTone(587.33, 'triangle', 0.05, 0.08); // D5
+  }
+
+  function playAddSound() {
+    playTone(880, 'sine', 0.08, 0.1); // A5
+  }
+
+  function playDragSound() {
+    playTone(440, 'sine', 0.03, 0.04); // A4
+  }
+
+  // ===== 2. 状态数据模型与预设路径库 =====
+  const state = {
+    commands: [
+      { type: 'M', x: 300, y: 180 },
+      { type: 'C', x1: 200, y1: 90, x2: 120, y2: 220, x: 300, y: 470 },
+      { type: 'C', x1: 480, y1: 220, x2: 400, y2: 90, x: 300, y: 180 },
+      { type: 'Z' }
+    ],
+    fillColor: 'rgba(99, 102, 241, 0.25)',
+    fillEnabled: true,
+    strokeColor: '#38bdf8',
+    strokeWidth: 3,
+    closeAuto: true,
+    rotation: 0,   // 角度盘当前值：自上次数据重建以来已烘焙进节点的累计旋转角（度）
+    editHint: '',  // 给操作记录打标：回写 d 源前预置条目名（不预置则包装层给「编辑节点」）
+    showHandles: true,
+    gridSnap: true,
+    gridVisible: true,
+    activeTab: 'path',
+    dragTarget: null // { cmdIndex, pointKey }
+  };
+
+  // 预设路径库（数据与 state 同层：属于模型，不是事件绑定；PART C 的预设捕获拦截也读这里）
+  const PRESETS = {
+    heart: [
+      { type: 'M', x: 300, y: 180 },
+      { type: 'C', x1: 200, y1: 90, x2: 120, y2: 220, x: 300, y: 470 },
+      { type: 'C', x1: 480, y1: 220, x2: 400, y2: 90, x: 300, y: 180 },
+      { type: 'Z' }
+    ],
+    wave: [
+      { type: 'M', x: 80, y: 300 },
+      { type: 'C', x1: 160, y1: 160, x2: 220, y2: 160, x: 300, y: 300 },
+      { type: 'C', x1: 380, y1: 440, x2: 440, y2: 440, x: 520, y: 300 },
+      { type: 'L', x: 520, y: 500 },
+      { type: 'L', x: 80, y: 500 },
+      { type: 'Z' }
+    ],
+    star: [
+      { type: 'M', x: 300, y: 90 },
+      { type: 'L', x: 350, y: 230 },
+      { type: 'L', x: 500, y: 240 },
+      { type: 'L', x: 380, y: 330 },
+      { type: 'L', x: 420, y: 480 },
+      { type: 'L', x: 300, y: 390 },
+      { type: 'L', x: 180, y: 480 },
+      { type: 'L', x: 220, y: 330 },
+      { type: 'L', x: 100, y: 240 },
+      { type: 'L', x: 250, y: 230 },
+      { type: 'Z' }
+    ],
+    bubble: [
+      { type: 'M', x: 160, y: 150 },
+      { type: 'C', x1: 160, y1: 120, x2: 440, y2: 120, x: 440, y: 150 },
+      { type: 'C', x1: 480, y1: 150, x2: 480, y2: 320, x: 440, y: 320 },
+      { type: 'L', x: 280, y: 320 },
+      { type: 'L', x: 200, y: 420 },
+      { type: 'L', x: 220, y: 320 },
+      { type: 'C', x1: 140, y1: 320, x2: 140, y2: 150, x: 160, y: 150 },
+      { type: 'Z' }
+    ],
+    badge: [
+      { type: 'M', x: 300, y: 90 },
+      { type: 'L', x: 480, y: 160 },
+      { type: 'L', x: 480, y: 340 },
+      { type: 'C', x1: 480, y1: 440, x2: 380, y2: 500, x: 300, y: 530 },
+      { type: 'C', x1: 220, y1: 500, x2: 120, y2: 440, x: 120, y: 340 },
+      { type: 'L', x: 120, y: 160 },
+      { type: 'Z' }
+    ],
+    drop: [
+      { type: 'M', x: 300, y: 100 },
+      { type: 'C', x1: 420, y1: 280, x2: 460, y2: 380, x: 420, y: 440 },
+      { type: 'C', x1: 360, y1: 520, x2: 240, y2: 520, x: 180, y: 440 },
+      { type: 'C', x1: 140, y1: 380, x2: 180, y2: 280, x: 300, y: 100 },
+      { type: 'Z' }
+    ],
+    circle: [
+      { type: 'M', x: 20, y: 50 },
+      { type: 'C', x1: 27.59, y1: 43.54, x2: 38.52, y2: 39.84, x: 50, y: 39.84 },
+      { type: 'C', x1: 61.48, y1: 39.84, x2: 72.41, y2: 43.54, x: 80, y: 50 },
+      { type: 'M', x: 120, y: 50 },
+      { type: 'C', x1: 105.82, y1: 37.94, x2: 106.84, y2: 19.64, x: 122.31, y: 8.51 },
+      { type: 'C', x1: 137.79, y1: -2.63, x2: 162.21, y2: -2.63, x: 177.69, y: 8.51 },
+      { type: 'C', x1: 193.16, y1: 19.64, x2: 194.18, y2: 37.94, x: 180, y: 50 },
+      { type: 'M', x: 20, y: 150 },
+      { type: 'C', x1: 27.59, y1: 156.46, x2: 38.52, y2: 160.16, x: 50, y: 160.16 },
+      { type: 'C', x1: 61.48, y1: 160.16, x2: 72.41, y2: 156.46, x: 80, y: 150 },
+      { type: 'M', x: 120, y: 150 },
+      { type: 'C', x1: 105.82, y1: 162.06, x2: 106.84, y2: 180.36, x: 122.31, y: 191.49 },
+      { type: 'C', x1: 137.79, y1: 202.63, x2: 162.21, y2: 202.63, x: 177.69, y: 191.49 },
+      { type: 'C', x1: 193.16, y1: 180.36, x2: 194.18, y2: 162.06, x: 180, y: 150 }
+    ],
+    rect: [
+      { type: 'M', x: 20, y: 10 },
+      { type: 'L', x: 80, y: 10 },
+      { type: 'C', x1: 85.52, y1: 10, x2: 90, y2: 14.48, x: 90, y: 20 },
+      { type: 'L', x: 90, y: 60 },
+      { type: 'C', x1: 90, y1: 65.52, x2: 85.52, y2: 70, x: 80, y: 70 },
+      { type: 'L', x: 20, y: 70 },
+      { type: 'C', x1: 14.48, y1: 70, x2: 10, y2: 65.52, x: 10, y: 60 },
+      { type: 'L', x: 10, y: 20 },
+      { type: 'C', x1: 10, y1: 14.48, x2: 14.48, y2: 10, x: 20, y: 10 },
+      { type: 'Z' }
+    ]
+  };
+
+  // ===== 3. 渲染与路径字符串计算 =====
+  function buildPathString(cmds) {
+    return cmds.map(c => {
+      if (c.type === 'M' || c.type === 'L') return `${c.type} ${c.x} ${c.y}`;
+      if (c.type === 'C') return `C ${c.x1} ${c.y1}, ${c.x2} ${c.y2}, ${c.x} ${c.y}`;
+      if (c.type === 'Q') return `Q ${c.x1} ${c.y1}, ${c.x} ${c.y}`;
+      if (c.type === 'Z') return 'Z';
+      return '';
+    }).join(' ');
+  }
+
+  function renderCanvas() {
+    const pathStr = buildPathString(state.commands);
+    const renderedPath = document.getElementById('renderedPath');
+    renderedPath.setAttribute('d', pathStr);
+    // 填充开关：未选中时画布不显示填充色，只留描边（不影响导出代码里的 fillColor）
+    renderedPath.setAttribute('fill', state.fillEnabled ? state.fillColor : 'none');
+    renderedPath.setAttribute('stroke', state.strokeColor);
+    renderedPath.setAttribute('stroke-width', state.strokeWidth);
+
+    document.getElementById('nodeCountText').innerText = state.commands.filter(c => c.type !== 'Z').length;
+
+    renderHandlesAndPoints();
+    renderCodeOutput();
+  }
+
+  function renderHandlesAndPoints() {
+    const handlesGroup = document.getElementById('handlesGroup');
+    const pointsGroup = document.getElementById('pointsGroup');
+    handlesGroup.innerHTML = '';
+    pointsGroup.innerHTML = '';
+
+    if (!state.showHandles) return;
+
+    let prevAnchor = { x: 0, y: 0 };
+
+    state.commands.forEach((cmd, idx) => {
+      if (cmd.type === 'M' || cmd.type === 'L') {
+        createAnchorCircle(cmd.x, cmd.y, idx, 'x', 'y');
+        prevAnchor = { x: cmd.x, y: cmd.y };
+      } else if (cmd.type === 'C') {
+        // 连线 1
+        createHandleLine(prevAnchor.x, prevAnchor.y, cmd.x1, cmd.y1);
+        createControlCircle(cmd.x1, cmd.y1, idx, 'x1', 'y1', 'point-ctrl');
+        // 连线 2
+        createHandleLine(cmd.x, cmd.y, cmd.x2, cmd.y2);
+        createControlCircle(cmd.x2, cmd.y2, idx, 'x2', 'y2', 'point-ctrl');
+        // 主锚点
+        createAnchorCircle(cmd.x, cmd.y, idx, 'x', 'y');
+        prevAnchor = { x: cmd.x, y: cmd.y };
+      } else if (cmd.type === 'Q') {
+        createHandleLine(prevAnchor.x, prevAnchor.y, cmd.x1, cmd.y1);
+        createHandleLine(cmd.x, cmd.y, cmd.x1, cmd.y1);
+        createControlCircle(cmd.x1, cmd.y1, idx, 'x1', 'y1', 'point-ctrl-q');
+        createAnchorCircle(cmd.x, cmd.y, idx, 'x', 'y');
+        prevAnchor = { x: cmd.x, y: cmd.y };
+      }
+    });
+  }
+
+  function createHandleLine(x1, y1, x2, y2) {
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', x1);
+    line.setAttribute('y1', y1);
+    line.setAttribute('x2', x2);
+    line.setAttribute('y2', y2);
+    line.setAttribute('class', 'handle-line');
+    document.getElementById('handlesGroup').appendChild(line);
+  }
+
+  function createAnchorCircle(x, y, cmdIndex, keyX, keyY) {
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', x);
+    circle.setAttribute('cy', y);
+    circle.setAttribute('r', 5.5);
+    circle.setAttribute('class', 'point-anchor');
+    circle.dataset.cmdIndex = cmdIndex;
+    circle.dataset.keyX = keyX;
+    circle.dataset.keyY = keyY;
+    document.getElementById('pointsGroup').appendChild(circle);
+  }
+
+  function createControlCircle(x, y, cmdIndex, keyX, keyY, cls = 'point-ctrl') {
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', x);
+    circle.setAttribute('cy', y);
+    circle.setAttribute('r', 4.5);
+    circle.setAttribute('class', cls);
+    circle.dataset.cmdIndex = cmdIndex;
+    circle.dataset.keyX = keyX;
+    circle.dataset.keyY = keyY;
+    document.getElementById('pointsGroup').appendChild(circle);
+  }
+
+  // ===== 4. 交互式拖拽逻辑 =====
+  const mainSvg = document.getElementById('mainSvg');
+
+  // 屏幕事件 → 用户坐标：返回未经取整的浮点。早期版本在这里 Math.round 到整数，
+  // 默认 600 取景下约等于 1px≈1unit 无伤大雅，但小坐标路径放大后 viewBox 只有个位数宽，
+  // 1 个整数单位会被拉成上百屏幕像素——拖拽只能整步跳变、控制手柄几乎拖不动。
+  // 取整/量化统一交给 snapVal 按取景步长处理，这里保持连续精度。
+  function getSvgCoordinates(evt) {
+    const CTM = mainSvg.getScreenCTM();
+    if (!CTM || !CTM.a || !CTM.d) return { x: 0, y: 0 };
+    return {
+      x: (evt.clientX - CTM.e) / CTM.a,
+      y: (evt.clientY - CTM.f) / CTM.d
+    };
+  }
+
+  // 一个屏幕像素在当前取景里对应的用户坐标跨度（放大检视小坐标时远小于 1）
+  function pixelStep() {
+    const vb = mainSvg.viewBox.baseVal;
+    return (vb && vb.width ? vb.width : 600) / 600;
+  }
+
+  // 吸附步长随取景缩放：路径被放大检视时步长同步变细，否则小路径会整段粘在同一网格上
+  function snapStep() {
+    return 10 * pixelStep();
+  }
+
+  // 按步长量级决定小数位：小步长（放大检视小坐标）不能用固定 toFixed(3)，否则又会被抹成整步跳变；
+  // 大步长则收掉浮点尾巴。decimals = 步长数量级向上取整后再多留 1 位。
+  function roundTo(val, step) {
+    if (!Number.isFinite(val) || !(step > 0)) return val;
+    const q = Math.round(val / step) * step;
+    const decimals = Math.min(8, Math.max(0, Math.ceil(-Math.log10(step)) + 1));
+    return Number(q.toFixed(decimals));
+  }
+
+  function snapVal(val) {
+    // 开启吸附：对齐到随取景缩放的网格；关闭吸附：仍量化到一个像素，既连续又不写入超长浮点
+    return roundTo(val, state.gridSnap ? snapStep() : pixelStep());
+  }
+
+  mainSvg.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.tagName === 'circle') {
+      const cmdIndex = parseInt(e.target.dataset.cmdIndex);
+      const keyX = e.target.dataset.keyX;
+      const keyY = e.target.dataset.keyY;
+      state.dragTarget = { cmdIndex, keyX, keyY, elem: e.target };
+      playDragSound();
+    }
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    const coords = getSvgCoordinates(e);
+    // 光标坐标按取景精度显示：小坐标放大后仍显示整数会一片 0，失去参考意义
+    const dp = Math.min(4, Math.max(0, Math.ceil(-Math.log10(pixelStep()))));
+    document.getElementById('cursorPos').innerText = `X: ${coords.x.toFixed(dp)}, Y: ${coords.y.toFixed(dp)}`;
+
+    if (state.dragTarget) {
+      let newX = snapVal(coords.x);
+      let newY = snapVal(coords.y);
+
+      // 拖拽边界取当前取景，而不是固定 0–600：取景变更后路径可能整体位于别处
+      const vb = mainSvg.viewBox.baseVal;
+      const lim = vb && vb.width ? vb : { x: 0, y: 0, width: 600, height: 600 };
+      newX = Math.max(lim.x, Math.min(lim.x + lim.width, newX));
+      newY = Math.max(lim.y, Math.min(lim.y + lim.height, newY));
+
+      const cmd = state.commands[state.dragTarget.cmdIndex];
+      if (cmd) {
+        cmd[state.dragTarget.keyX] = newX;
+        cmd[state.dragTarget.keyY] = newY;
+        renderCanvas();
+      }
+    }
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (state.dragTarget) {
+      state.dragTarget = null;
+      playSnapSound();
+    }
+  });
+
+  // ===== 5. 画布拖拽平移（pan）：在锚点/控制点以外的空白处拖动只移 viewBox，
+  // 不改路径数据与节点；「适配当前窗口」按钮可回到内容取景。PART C 的点选段已有
+  // “按下与抬起位移 >4px 视为拖拽不算点击”守卫，平移结束不会误选段。
+  let panRef = null;
+  const endPan = () => {
+    if (!panRef) return;
+    panRef = null;
+    mainSvg.classList.remove('panning');
+  };
+  mainSvg.addEventListener('mousedown', (e) => {
+    if (e.button === 1) e.preventDefault();   // 中键只压掉 autoscroll，不参与平移
+    // state.dragTarget 守卫：旧版窗口失焦可能残留拖点态，不拦会与平移同帧叠加成双倍位移写坏路径
+    if (e.button !== 0 || e.target.tagName === 'circle' || state.dragTarget) return;
+    panRef = { x: e.clientX, y: e.clientY };
+    mainSvg.classList.add('panning');
+    e.preventDefault();   // 避免拖拽期间触发原生选中/图片拖拽
+    // preventDefault 会保留焦点，这里显式 blur，与按锚点路径及新增前的焦点语义一致，
+    // 避免平移后敲键盘误写 d 源触发重取景
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!panRef) return;
+    const CTM = mainSvg.getScreenCTM();
+    const vb = mainSvg.viewBox.baseVal;
+    if (!CTM || !CTM.a || !CTM.d || !vb || !vb.width) return;
+    // 屏幕像素位移 → 用户坐标位移（CTM.a/d 已含 preserveAspectRatio 适配后的实际缩放）
+    const x = vb.x - (e.clientX - panRef.x) / CTM.a;
+    const y = vb.y - (e.clientY - panRef.y) / CTM.d;
+    // 脏值（NaN/Infinity）宁可不写：写进 viewBox 会让属性整体失效，SVG 退化为无取景呈现
+    if (!Number.isFinite(x) || !Number.isFinite(y)) { endPan(); return; }
+    panRef = { x: e.clientX, y: e.clientY };
+    mainSvg.setAttribute('viewBox', `${x} ${y} ${vb.width} ${vb.height}`);
+  });
+  // 复位收口：左键抬起结束；窗口失焦、右键菜单弹出时补退，否则丢 mouseup 会残留成 hover 拖图 + 光标卡在 grabbing
+  window.addEventListener('mouseup', e => { if (e.button === 0) endPan(); });
+  window.addEventListener('blur', endPan);
+  mainSvg.addEventListener('contextmenu', endPan);
+
+  // ===== 6. 跨端代码生成 =====
+  // 生成代码前的格式化入口：读跨端卡片里的坐标/精度/间隔与展开开关，走 DBG.normalize 重排；
+  // 脚本 1 首屏渲染时 DBG 尚未定义（或解析失败）则回退原始 buildPathString 输出
+  function exportPathString() {
+    const raw = buildPathString(state.commands);
+    if (typeof DBG === 'undefined') return raw;
+    const mode = document.getElementById('dbgCoordMode').dataset.value;
+    const pv = document.getElementById('dbgPrecision').dataset.value;
+    // 保持原样以 d 源文本为输入（节点模型永远是绝对大写，只读节点会退化成“绝对”）；
+    // d 源带语法错误时退回节点展开形式
+    let input = mode === 'source' ? document.getElementById('dbgSource').value : raw;
+    let r = DBG.parsePath(input);
+    if (r.error || !r.segments.length) {
+      if (input === raw) return raw;
+      r = DBG.parsePath(raw);
+      if (r.error || !r.segments.length) return raw;
+    }
+    return DBG.normalize(r.segments, {
+      mode,
+      precision: pv === 'full' ? 'full' : Number(pv),
+      spacing: document.getElementById('dbgSpacing').dataset.value,
+      expandHV: document.getElementById('dbgExpandHV').checked,
+      expandS: document.getElementById('dbgExpandS').checked,
+      expandT: document.getElementById('dbgExpandT').checked
+    });
+  }
+
+  function renderCodeOutput() {
+    const pathStr = exportPathString();
+    let output = '';
+
+    if (state.activeTab === 'path') {
+      output = `${pathStr}`;
+    } else if (state.activeTab === 'svg') {
+      output = `<svg width="600" height="600" viewBox="0 0 600 600" fill="none" xmlns="http://www.w3.org/2000/svg">\n  <path d="${pathStr}" fill="${state.fillColor}" stroke="${state.strokeColor}" stroke-width="${state.strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n</svg>`;
+    } else if (state.activeTab === 'react') {
+      output = `export const CustomShape = () => (\n  <svg viewBox="0 0 600 600" className="w-full h-full">\n    <path\n      d="${pathStr}"\n      fill="${state.fillColor}"\n      stroke="${state.strokeColor}"\n      strokeWidth="${state.strokeWidth}"\n      strokeLinecap="round"\n      strokeLinejoin="round"\n    />\n  </svg>\n);`;
+    } else if (state.activeTab === 'css') {
+      output = `.custom-clip-shape {\n  clip-path: path('${pathStr}');\n  background: ${state.fillColor};\n  width: 600px;\n  height: 600px;\n}`;
+    } else if (state.activeTab === 'canvas') {
+      output = `const canvas = document.getElementById('myCanvas');\nconst ctx = canvas.getContext('2d');\nconst p = new Path2D('${pathStr}');\n\nctx.fillStyle = '${state.fillColor}';\nctx.fill(p);\nctx.strokeStyle = '${state.strokeColor}';\nctx.lineWidth = ${state.strokeWidth};\nctx.stroke(p);`;
+    }
+
+    document.getElementById('codeOutput').textContent = output;
+  }
+
+  // ===== 7. 控制事件绑定 =====
+
+  // -- 7.1 预设按钮（每个 .preset-btn 自身的处理器；PART C 在捕获阶段抢在此前拦截，见回归点 12）
+  document.querySelectorAll('.preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const presetKey = btn.dataset.preset;
+      if (PRESETS[presetKey]) {
+        state.commands = JSON.parse(JSON.stringify(PRESETS[presetKey]));
+        playAddSound();
+        renderCanvas();
+        showToast(`已加载预设「${btn.innerText.trim()}」`);
+      }
+    });
+  });
+
+  // -- 7.2 代码页签与导出格式控件（坐标/间隔/精度/展开命令，只重排生成代码，不回写 d 源与节点）
+  document.querySelectorAll('.code-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.code-tab-btn').forEach(b => b.classList.remove('active', 'bg-indigo-600', 'text-white'));
+      btn.classList.add('active', 'bg-indigo-600', 'text-white');
+      state.activeTab = btn.dataset.tab;
+      renderCodeOutput();
+    });
+  });
+
+  // 坐标/间隔为分段按钮组（选中态存 data-value），精度与展开开关保持原生控件；改动即时重排生成代码
+  ['dbgCoordMode', 'dbgSpacing'].forEach(id => {
+    const group = document.getElementById(id);
+    group.addEventListener('click', e => {
+      const btn = e.target.closest('button[data-value]');
+      if (!btn || btn.dataset.value === group.dataset.value) return;
+      group.dataset.value = btn.dataset.value;
+      group.querySelectorAll('button').forEach(b => b.classList.toggle('seg-active', b === btn));
+      renderCodeOutput();
+      playSnapSound();
+    });
+  });
+  ['dbgExpandHV', 'dbgExpandS', 'dbgExpandT'].forEach(id =>
+    document.getElementById(id).addEventListener('change', () => { renderCodeOutput(); playSnapSound(); }));
+
+  // 自定义下拉（精度）：选项复用 .seg-btn/.seg-active 高亮；点外部/Esc 收起，选中即刷新生成代码
+  document.querySelectorAll('.dd').forEach(dd => {
+    const panel = dd.querySelector('.dd-panel');
+    const label = dd.querySelector('.dd-label');
+    const closeAll = () => document.querySelectorAll('.dd-panel').forEach(p => p.classList.add('hidden'));
+    dd.querySelector('.dd-trigger').addEventListener('click', e => {
+      e.stopPropagation();
+      const wasHidden = panel.classList.contains('hidden');
+      closeAll();
+      if (wasHidden) panel.classList.remove('hidden');
+    });
+    panel.addEventListener('click', e => {
+      const btn = e.target.closest('button[data-value]');
+      if (!btn) return;
+      dd.dataset.value = btn.dataset.value;
+      label.textContent = btn.textContent;
+      panel.querySelectorAll('button').forEach(b => b.classList.toggle('seg-active', b === btn));
+      panel.classList.add('hidden');
+      renderCodeOutput();
+      playSnapSound();
+    });
+  });
+  document.addEventListener('click', () => document.querySelectorAll('.dd-panel').forEach(p => p.classList.add('hidden')));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('.dd-panel').forEach(p => p.classList.add('hidden')); });
+
+  // -- 7.3 颜色、描边与显示开关（只改外观不经 d 源，与同文短路一起自然不入历史条）
+  // 颜色与描边
+  document.getElementById('fillColorInput').addEventListener('input', (e) => {
+    state.fillColor = e.target.value;
+    document.getElementById('fillColorText').value = e.target.value;
+    renderCanvas();
+  });
+
+  // 填充开关：切换即时重绘，勾选才按填充色渲染，取消后只显示路径
+  document.getElementById('fillEnabledCheck').addEventListener('change', (e) => {
+    state.fillEnabled = e.target.checked;
+    renderCanvas();
+  });
+
+  document.getElementById('strokeColorInput').addEventListener('input', (e) => {
+    state.strokeColor = e.target.value;
+    document.getElementById('strokeColorText').value = e.target.value;
+    renderCanvas();
+  });
+
+  // 描边粗细：数字框与进度条共用 setStrokeWidth，两个控件双向镜像。
+  // 取值范围/步进沿用进度条（0–16，步长 0.1，因此最小能输入 0.1）：手输越界或非步进值一律回写成合法值——
+  // range 自己会把非 step 的值吸附到最近档位，不回写就会出现“输入 3.75、滑块停在 3.8”的两处不一致。
+  const SW_MIN = 0, SW_MAX = 16, SW_DEC = 1;   // SW_DEC 即 HTML 侧 step="0.1" 的档位小数位
+  function setStrokeWidth(v) {
+    if (!Number.isFinite(v)) return;
+    // 量化走 toFixed，不用 Math.round(v / step) * step：后者会把 0.3 算成
+    // 0.30000000000000004（0.1 不是二进制精确量），脏值会直接泄进导出代码
+    const to = Math.min(SW_MAX, Math.max(SW_MIN, Number(v.toFixed(SW_DEC))));
+    state.strokeWidth = to;
+    const rangeEl = document.getElementById('strokeWidthRange');
+    const numEl = document.getElementById('strokeWidthInput');
+    if (+rangeEl.value !== to) rangeEl.value = to;
+    if (+numEl.value !== to) numEl.value = to;
+    renderCanvas();
+  }
+
+  document.getElementById('strokeWidthRange').addEventListener('input', e => setStrokeWidth(parseFloat(e.target.value)));
+  document.getElementById('strokeWidthInput').addEventListener('input', e => {
+    // 打字过程中的空串、单独一个小数点这类中间态忽略；写出完整数字再生效
+    const v = e.target.value.trim();
+    if (!v) return;
+    setStrokeWidth(parseFloat(v));
+  });
+
+  document.getElementById('showHandlesCheck').addEventListener('change', (e) => {
+    state.showHandles = e.target.checked;
+    renderCanvas();
+  });
+
+  document.getElementById('gridSnapCheck').addEventListener('change', (e) => {
+    state.gridSnap = e.target.checked;
+  });
+
+  document.getElementById('gridVisibleCheck').addEventListener('change', (e) => {
+    const container = document.getElementById('canvasContainer');
+    if (e.target.checked) {
+      container.classList.add('canvas-grid', 'canvas-grid-major');
+    } else {
+      container.classList.remove('canvas-grid', 'canvas-grid-major');
+    }
+  });
+
+  // ===== 8. 角度调整：绕图形自身中心烘焙旋转（写进节点与 d 源，不是视图变换）=====
+  // 控件语义：自上次数据重建以来累计应用的旋转角。拖到 45 就是把当前全部坐标绕包围盒
+  // 中心顺时针转 45°（SVG y 轴向下，正角为顺时针，与 transform="rotate()" 同向）。
+  // 一次拖拽内以“起手时的坐标快照 + 中心”为基准做单步绝对旋转：逐帧复合小角度会累积
+  // 浮点误差，且中心会随每帧新 bbox 游走（图形边转边漂），拖回起手角度时必须无损还原
+  const ROT_KEYS = [['x', 'y'], ['x1', 'y1'], ['x2', 'y2']];
+  let rotAnchor = null;   // { cmds, center, angle }：起手快照，手势结束（change）即作废
+
+  function rotationCenter(cmds) {
+    // 取包含控制点的包围盒中心：只用锚点在 heart 这类“宽度全靠控制点撑开”的路径上
+    // 会退化成一条竖线（x 全相等），转起来像绕边上一点拨
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    cmds.forEach(c => ROT_KEYS.forEach(([kx, ky]) => {
+      if (typeof c[kx] !== 'number' || typeof c[ky] !== 'number') return;
+      if (c[kx] < minX) minX = c[kx];
+      if (c[kx] > maxX) maxX = c[kx];
+      if (c[ky] < minY) minY = c[ky];
+      if (c[ky] > maxY) maxY = c[ky];
+    }));
+    return Number.isFinite(minX) ? { x: (minX + maxX) / 2, y: (minY + maxY) / 2 } : { x: 300, y: 300 };
+  }
+
+  function setRotation(deg) {
+    if (!Number.isFinite(deg)) return;
+    const to = Math.max(-180, Math.min(180, deg));
+    const rangeEl = document.getElementById('rotationRange');
+    const numEl = document.getElementById('rotationInput');
+    if (+rangeEl.value !== to) rangeEl.value = to;      // 两个控件双向镜像
+    if (+numEl.value !== to) numEl.value = to;          // 也顺带把越界输入回写到合法值
+    if (to === state.rotation && !rotAnchor) return;
+    if (!rotAnchor) {
+      rotAnchor = { cmds: JSON.parse(JSON.stringify(state.commands)), center: rotationCenter(state.commands), angle: state.rotation };
+    }
+    const a = rotAnchor, step = to - a.angle;
+    state.commands.forEach((cmd, i) => {
+      const base = a.cmds[i];
+      if (!base) return;
+      ROT_KEYS.forEach(([kx, ky]) => {
+        if (typeof base[kx] !== 'number' || typeof base[ky] !== 'number') return;
+        if (step === 0) { cmd[kx] = base[kx]; cmd[ky] = base[ky]; return; }   // 回到起手角度：无损还原
+        const p = DBG.rotPt(base[kx], base[ky], a.center.x, a.center.y, step);
+        // 取整到 3 位：旋转结果必带长小数，不取整会把 d 源撑得很难读
+        cmd[kx] = Math.round(p.x * 1000) / 1000;
+        cmd[ky] = Math.round(p.y * 1000) / 1000;
+      });
+    });
+    state.rotation = to;
+    // 标签不带具体度数：一次拖拽会产生几十上百个角度，同名才能被历史栏 700ms 归并为一条
+    state.editHint = '旋转角度';
+    renderCanvas();   // 经 PART C 包装层回写 d 源并入历史（与拖拽、追增同一出口）
+  }
+
+  // 外部数据变更（文本 / 预设 / 命令表 / 撤销）会整体重建节点，“累计旋转角”语义失效，
+  // 控件归零以免显示与数据不符（旋转自身走 rebuild=false，不会触发本函数）
+  function resetRotationDial() {
+    state.rotation = 0;
+    rotAnchor = null;
+    document.getElementById('rotationRange').value = 0;
+    document.getElementById('rotationInput').value = 0;
+  }
+
+  document.getElementById('rotationRange').addEventListener('input', e => setRotation(parseFloat(e.target.value)));
+  document.getElementById('rotationInput').addEventListener('input', e => {
+    // 打字过程中会出现空串、单独一个“-”这类中间态，忽略；写出完整数字再生效
+    const v = e.target.value.trim();
+    if (!v) return;
+    setRotation(parseFloat(v));
+  });
+  ['rotationRange', 'rotationInput'].forEach(id =>
+    document.getElementById(id).addEventListener('change', () => {
+      rotAnchor = null;                       // 手势结束：下一次改动以当前形状为新基准
+      if (state.rotation !== 0) playSnapSound();
+    }));
+
+  // ===== 9. 复制与导出 =====
+  document.getElementById('copyCodeBtn').addEventListener('click', () => {
+    const code = document.getElementById('codeOutput').textContent;
+    navigator.clipboard.writeText(code).then(() => {
+      playTone(659.25, 'sine', 0.08, 0.1);
+      showToast('代码已成功复制到剪贴板！');
+    });
+  });
+
+  document.getElementById('exportSvgBtn').addEventListener('click', () => {
+    const pathStr = exportPathString();
+    const svgContent = `<svg width="600" height="600" viewBox="0 0 600 600" fill="none" xmlns="http://www.w3.org/2000/svg">\n  <path d="${pathStr}" fill="${state.fillColor}" stroke="${state.strokeColor}" stroke-width="${state.strokeWidth}" stroke-linecap="round" stroke-linejoin="round" />\n</svg>`;
+    const blob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `svgpath-${Date.now()}.svg`;
+    a.click();
+    URL.revokeObjectURL(url);
+    playTone(523.25, 'sine', 0.12, 0.1);
+    showToast('SVG 文件已导出下载！');
+  });
+
+  document.getElementById('resetViewBtn').addEventListener('click', () => {
+    state.commands = JSON.parse(JSON.stringify(PRESETS.heart));
+    playSnapSound();
+    renderCanvas();
+    showToast('画布已重置为初始状态');
+  });
+
+  // ===== 9b. 音效开关 =====
+  document.getElementById('soundToggleBtn').addEventListener('click', () => {
+    soundEnabled = !soundEnabled;
+    document.getElementById('soundIcon').className = soundEnabled ? 'fa-solid fa-volume-high text-indigo-400' : 'fa-solid fa-volume-xmark text-slate-500';
+    document.getElementById('soundText').innerText = soundEnabled ? '音效开' : '音效关';
+    if (soundEnabled) playTone(440, 'sine', 0.06, 0.1);
+  });
+
+  // ===== 10. Toast 提示与首屏初始化 =====
+  function showToast(msg) {
+    const toast = document.getElementById('toast');
+    document.getElementById('toastMsg').innerText = msg;
+    toast.classList.remove('translate-y-20', 'opacity-0', 'pointer-events-none');
+    setTimeout(() => {
+      toast.classList.add('translate-y-20', 'opacity-0', 'pointer-events-none');
+    }, 2000);
+  }
+
+  // 首屏渲染：必须排在全部定义与监听之后（PART C 加载后会包装 renderCanvas 并接管回写，见脚本 2）
+  renderCanvas();
+</script>
+
+<script>
+  // ============================================================
+  // SVGPath Debugger 增量模块
+  // 解析规则与几何公式取自 W3C SVG 2《Paths》章节（含 F.6.5 端点 ↔ 圆心参数化），
+  // 以下为本仓库独立实现，未参考任何第三方构建产物。
+  //
+  // 本文件两块结构（维护时的阅读顺序）：
+  //   DBG —— 纯逻辑 IIFE（下方 1–9 节，全程不碰 document）。dbg.test.mjs 靠对本块
+  //          首尾两行（开头的 const DBG 赋值与结尾的立即执行收口）做文本定位
+  //          就地抽取后在 Node 里跑；锚点文本、内部各节的依赖顺序与末尾 return 白名单均不可改动，
+  //          其他注释/代码不得原样复述锚点那两行，以免误中定位
+  //   PART C —— 调试器 DOM 交互 IIFE（事件绑定 / 取景 / 叠加 / 同源回写，目录见节首总览）
+  //
+  // DBG 分节目录：
+  //   1. 命令参数表与诊断文案 —— CMD_LETTERS / ARITY / PARAMS / DIAG_TEXT / makeDiag
+  //   2. 词法分析器 —— Reader（数字/标志/命令读取与诊断描述）
+  //   3. 语法分析器 —— parsePath（主入口，含 emit/readGroup 内部函数）
+  //   4. 圆弧几何 —— arcSolve（F.6.5 端点→圆心参数）/ arcPoint / arcDeriv
+  //   5. 曲线求值与导数 —— segPoint / segDeriv（S/T 与 C/Q 同构，见回归点 1）
+  //   6. 弧长 —— 8 点 Gauss-Legendre 求积 + 自适应二分（segLength）
+  //   7. 包围盒与取景 —— boundsOf / viewBoxOf / zoomBox / rotPt（cubicRoots 过滤 0<t<1，见回归点 13）
+  //   8. 摘要指标 —— metricsOf
+  //   9. 规范化输出 —— fmt / normalize / arcToCubics
+  // ============================================================
+  const DBG = (function () {
+
+    // ===== DBG-1. 命令参数表 =====
+    const CMD_LETTERS = 'MmLlHhVvCcSsQqTtAaZz';
+    const ARITY = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
+    const PARAMS = {
+      M: ['x', 'y'], L: ['x', 'y'], H: ['x'], V: ['y'],
+      C: ['x1', 'y1', 'x2', 'y2', 'x', 'y'],
+      S: ['x2', 'y2', 'x', 'y'],
+      Q: ['x1', 'y1', 'x', 'y'],
+      T: ['x', 'y'],
+      A: ['rx', 'ry', 'rotation', 'largeArcFlag', 'sweepFlag', 'x', 'y'],
+      Z: []
+    };
+    const FLAG_NAMES = { largeArcFlag: true, sweepFlag: true };
+    const MAX_LENGTH = 200000;
+    const MAX_SEGMENTS = 20000;
+
+    // ===== DBG-1b. 诊断文案 =====
+    const DIAG_TEXT = {
+      'missing-moveto': '路径数据必须以 moveto（M 或 m）开头。',
+      'unexpected-token': '出现无法识别的值。',
+      'missing-parameter': '命令缺少必需的参数。',
+      'malformed-number': '数字格式不合法。',
+      'invalid-arc-flag': '圆弧标志只能是 0 或 1。',
+      'unexpected-comma': '这里不应该出现逗号。',
+      'trailing-comma': '逗号后面还必须跟一个参数。',
+      'too-long': '路径数据超出可处理长度上限。',
+      'too-many-segments': '命令数量超出可处理上限。',
+      'negative-arc-radius': '圆弧半径为负值，已按绝对值绘制。',
+      'zero-arc-radius': '圆弧半径为 0，已退化为直线。',
+      'arc-radii-scaled': '圆弧半径不足以连接起止点，已按比例放大。',
+      'arc-zero-length': '圆弧起点与终点重合，不绘制任何内容。',
+      'lone-moveto': '子路径只有 moveto，没有绘制任何内容。'
+    };
+    const ARG_TEXT = {
+      x: 'x 坐标', y: 'y 坐标', x1: 'x1 控制坐标', y1: 'y1 控制坐标',
+      x2: 'x2 控制坐标', y2: 'y2 控制坐标', rx: 'x 方向半径', ry: 'y 方向半径',
+      rotation: 'x 轴旋转角', largeArcFlag: '大弧标志（0 或 1）', sweepFlag: '扫描方向标志（0 或 1）'
+    };
+
+    const isWs = c => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
+    const isDigit = c => c >= '0' && c <= '9';
+    const isCmd = c => !!c && CMD_LETTERS.indexOf(c) >= 0;
+    const isNumStart = c => !!c && (c === '+' || c === '-' || c === '.' || isDigit(c));
+
+    function makeDiag(code, severity, at, extra) {
+      const e = extra || {};
+      const parts = [DIAG_TEXT[code] || code];
+      if (typeof at === 'number') parts.push('位于第 ' + (at + 1) + ' 个字符。');
+      if (e.expected && e.expected.length) {
+        parts.push('期望：' + e.expected.map(p => ARG_TEXT[p] || p).join(' 或 ') + '。');
+      }
+      if (e.received !== undefined) {
+        let got = e.received;
+        if (got === '') got = '数据结束';
+        else if (got.length > 24) got = got.slice(0, 24) + '…';
+        parts.push('实际：' + got + '。');
+      }
+      return {
+        code, severity,
+        message: parts.filter(Boolean).join(' '),
+        start: typeof at === 'number' ? at : 0,
+        end: typeof e.end === 'number' ? e.end : (typeof at === 'number' ? at + 1 : 0),
+        segmentIndex: e.segmentIndex
+      };
+    }
+
+    // ===== DBG-2. 词法分析器 =====
+    function Reader(text) { this.text = text; this.pos = 0; }
+    Reader.prototype.eof = function () { return this.pos >= this.text.length; };
+    Reader.prototype.skipWs = function () { while (!this.eof() && isWs(this.text[this.pos])) this.pos++; };
+    Reader.prototype.atCommand = function () { return isCmd(this.text[this.pos]); };
+    Reader.prototype.atNumber = function () { return isNumStart(this.text[this.pos]); };
+    Reader.prototype.takeCommand = function () {
+      if (!this.atCommand()) return null;
+      const value = this.text[this.pos], start = this.pos;
+      this.pos += 1;
+      return { value, start, end: this.pos };
+    };
+    Reader.prototype.numberPattern = function (withExpDigits) {
+      // 数字：可选符号 + （整数部分[.小数部分] | .小数部分）+ 可选指数
+      return new RegExp('^[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?' + (withExpDigits ? '\\d+' : '\\d*') + ')?');
+    };
+    Reader.prototype.takeNumber = function () {
+      const start = this.pos;
+      // 不能用定长窗口截断：超过窗口的数字会被静默切成两个参数，后续整体错位却不报错
+      const m = this.numberPattern(true).exec(this.text.slice(start));
+      if (!m || !m[0]) {
+        return { bad: true, raw: this.text.charAt(start) || '', start, end: start + 1 };
+      }
+      const raw = m[0];
+      this.pos = start + raw.length;
+      const value = Number(raw);
+      if (!isFinite(value)) return { bad: true, raw, start, end: this.pos };
+      return { value, raw, start, end: this.pos };
+    };
+    Reader.prototype.takeFlag = function () {
+      const c = this.text[this.pos];
+      if (c !== '0' && c !== '1') return null;
+      const start = this.pos;
+      this.pos += 1;
+      return { value: +c, start, end: this.pos };
+    };
+    // 仅用于诊断描述（不会推进位置）：遇到非法数值时能看出作者本意
+    Reader.prototype.describe = function () {
+      const at = this.pos;
+      if (this.eof()) return { received: '', kind: 'end', at };
+      const c = this.text[at];
+      if (isCmd(c)) return { received: c, kind: 'command', at };
+      if (c === ',') return { received: ',', kind: 'comma', at };
+      if (isNumStart(c)) {
+        const m = this.numberPattern(false).exec(this.text.slice(at));
+        return { received: m && m[0] ? m[0] : c, kind: 'number', at };
+      }
+      const wide = (this.text.codePointAt(at) || 0) > 0xffff ? 2 : 1;
+      return { received: this.text.slice(at, at + wide), kind: 'character', at };
+    };
+
+    // ===== DBG-3. 语法分析器 =====
+    function parsePath(src) {
+      const result = {
+        source: src, segments: [], diagnostics: [], error: null,
+        commandCount: 0, subpathCount: 0, consumedTo: 0, limit: null
+      };
+      if (src.length > MAX_LENGTH) {
+        const d = makeDiag('too-long', 'error', MAX_LENGTH, { end: src.length });
+        result.diagnostics.push(d); result.error = d; result.limit = 'length';
+        return result;
+      }
+
+      const rd = new Reader(src);
+      const segs = [];
+      const warns = [];
+      let cur = { x: 0, y: 0 };
+      let subStart = { x: 0, y: 0 };
+      let subIndex = -1;
+      let prevC2 = null, prevQc = null, prevKind = null;
+      let lastLetter = null;
+      let fatal = null;
+      let lastGoodEnd = 0;   // 最后一个完整命令的末尾，用于安全绘制有效前缀
+
+      function reflect(base, p) { return { x: 2 * base.x - p.x, y: 2 * base.y - p.y }; }
+
+      function readGroup(letter) {
+        const names = PARAMS[letter.toUpperCase()];
+        const vals = [];
+        let afterComma = false;
+        for (let i = 0; i < names.length; i++) {
+          const name = names[i];
+          if (i > 0) {
+            rd.skipWs();
+            if (rd.text[rd.pos] === ',') { rd.pos++; rd.skipWs(); afterComma = true; }
+          }
+          if (FLAG_NAMES[name]) {
+            const f = rd.takeFlag();
+            if (f) { vals.push(f.value); continue; }
+            const d = rd.describe();
+            const err = makeDiag(isNumStart(d.received) ? 'invalid-arc-flag' : 'missing-parameter', 'error', d.at,
+              { expected: [name], received: d.received });
+            throw { diag: err };
+          }
+          if (!rd.atNumber()) {
+            const d = rd.describe();
+            const code = d.kind === 'comma' ? 'unexpected-comma'
+              : d.kind === 'character' ? 'unexpected-token'
+              : afterComma ? 'trailing-comma' : 'missing-parameter';
+            throw { diag: makeDiag(code, 'error', d.at, { expected: [name], received: d.received }) };
+          }
+          const num = rd.takeNumber();
+          if (num.bad) {
+            throw { diag: makeDiag('malformed-number', 'error', num.start, { expected: [name], received: num.raw, end: num.end }) };
+          }
+          vals.push(num.value);
+        }
+        return vals;
+      }
+
+      function emit(letter, vals, range, implicit) {
+        // 上限检查必须在写入任何状态之前，否则段表会比画布有效前缀多一段
+        if (segs.length >= MAX_SEGMENTS) {
+          throw { diag: makeDiag('too-many-segments', 'error', range[0], { end: range[1] }) };
+        }
+        let kind = letter.toUpperCase();
+        const rel = kind !== letter;
+        if (kind === 'M' && implicit) kind = 'L';  // moveto 后的坐标对成为隐式直线
+        const from = { x: cur.x, y: cur.y };
+        const P = (a, b) => rel ? { x: from.x + a, y: from.y + b } : { x: a, y: b };
+        const seg = {
+          index: segs.length, subpath: subIndex < 0 ? 0 : subIndex,
+          type: kind, source: letter, relative: rel, implicit: !!implicit,
+          params: vals, range: [range[0], range[1]],
+          start: from, end: from, reflected: false
+        };
+
+        switch (kind) {
+          case 'M': {
+            const end = P(vals[0], vals[1]);
+            seg.end = end; subStart = end;
+            break;
+          }
+          case 'L': seg.end = P(vals[0], vals[1]); break;
+          case 'H': seg.end = { x: rel ? from.x + vals[0] : vals[0], y: from.y }; break;
+          case 'V': seg.end = { x: from.x, y: rel ? from.y + vals[0] : vals[0] }; break;
+          case 'C':
+            seg.c1 = P(vals[0], vals[1]); seg.c2 = P(vals[2], vals[3]); seg.end = P(vals[4], vals[5]);
+            break;
+          case 'S': {
+            const canReflect = prevKind === 'C' || prevKind === 'S';
+            seg.c1 = canReflect && prevC2 ? reflect(from, prevC2) : { x: from.x, y: from.y };
+            seg.reflected = canReflect && !!prevC2;
+            seg.c2 = P(vals[0], vals[1]); seg.end = P(vals[2], vals[3]);
+            break;
+          }
+          case 'Q':
+            seg.ctrl = P(vals[0], vals[1]); seg.end = P(vals[2], vals[3]);
+            break;
+          case 'T': {
+            const canReflect = prevKind === 'Q' || prevKind === 'T';
+            seg.ctrl = canReflect && prevQc ? reflect(from, prevQc) : { x: from.x, y: from.y };
+            seg.reflected = canReflect && !!prevQc;
+            seg.end = P(vals[0], vals[1]);
+            break;
+          }
+          case 'A':
+            seg.arc = { rx: vals[0], ry: vals[1], rotation: vals[2], largeArc: vals[3] === 1, sweep: vals[4] === 1 };
+            seg.end = P(vals[5], vals[6]);
+            break;
+          default: // Z
+            seg.end = { x: subStart.x, y: subStart.y };
+        }
+
+        // 上一命令的控制点快照（用于 S / T 反射）
+        if (kind === 'C' || kind === 'S') { prevC2 = seg.c2; prevQc = null; }
+        else if (kind === 'Q' || kind === 'T') { prevQc = seg.ctrl; prevC2 = null; }
+        else { prevC2 = null; prevQc = null; }
+
+        cur = { x: seg.end.x, y: seg.end.y };
+        prevKind = kind;
+        segs.push(seg);
+
+        // 子路径划分
+        if (kind === 'M') {
+          subIndex += 1;
+          seg.subpath = subIndex;
+          subStart = { x: seg.end.x, y: seg.end.y };
+        } else {
+          seg.subpath = subIndex;
+          if (kind === 'Z') seg.closes = true;
+        }
+
+        // 圆弧告警（需要几何求解结果）
+        if (kind === 'A') {
+          const g = arcSolve(seg);
+          const at = { start: seg.range[0], end: seg.range[1], segmentIndex: seg.index };
+          if (seg.arc.rx < 0 || seg.arc.ry < 0) {
+            warns.push(makeDiag('negative-arc-radius', 'warning', at.start, { end: at.end, segmentIndex: at.segmentIndex }));
+          }
+          if (g.kind === 'skip') warns.push(makeDiag('arc-zero-length', 'warning', at.start, { end: at.end, segmentIndex: at.segmentIndex }));
+          else if (g.kind === 'line') warns.push(makeDiag('zero-arc-radius', 'warning', at.start, { end: at.end, segmentIndex: at.segmentIndex }));
+          else if (g.scaled) warns.push(makeDiag('arc-radii-scaled', 'warning', at.start, { end: at.end, segmentIndex: at.segmentIndex }));
+        }
+
+      }
+
+      try {
+        rd.skipWs();
+        if (!rd.eof() && rd.text[rd.pos] !== 'M' && rd.text[rd.pos] !== 'm') {
+          const d = rd.describe();
+          throw { diag: makeDiag('missing-moveto', 'error', d.at, { expected: ['command'], received: d.received }) };
+        }
+        for (;;) {
+          rd.skipWs();
+          if (rd.eof()) break;
+          let letter, implicit = false, start, explicit = false;
+          const tok = rd.takeCommand();
+          if (tok) {
+            letter = tok.value; start = tok.start; explicit = true;
+            if (ARITY[letter.toUpperCase()] === 0) {
+              emit(letter, [], [tok.start, tok.end], false);
+              result.commandCount += 1; lastLetter = null; lastGoodEnd = tok.end; continue;
+            }
+            rd.skipWs();
+            if (rd.text[rd.pos] === ',') {
+              const d = rd.describe();
+              throw { diag: makeDiag('unexpected-comma', 'error', d.at, { expected: [PARAMS[letter.toUpperCase()][0]], received: ',' }) };
+            }
+          } else if (lastLetter && ARITY[lastLetter.toUpperCase()] > 0 && rd.atNumber()) {
+            letter = lastLetter; implicit = true; start = rd.pos;
+          } else {
+            const d = rd.describe();
+            const repeatable = !!lastLetter && ARITY[lastLetter.toUpperCase()] > 0;
+            const code = d.kind === 'comma' ? (repeatable ? 'trailing-comma' : 'unexpected-comma') : 'unexpected-token';
+            throw { diag: makeDiag(code, 'error', d.at, { expected: repeatable ? ['command', 'number'] : ['command'], received: d.received }) };
+          }
+          const vals = readGroup(letter);
+          const end = rd.pos;
+          emit(letter, vals, [start, end], implicit);
+          if (explicit) result.commandCount += 1;
+          lastLetter = letter;
+          lastGoodEnd = end;
+        }
+      } catch (err) {
+        if (err && err.diag) { fatal = err.diag; }
+        else throw err;
+      }
+
+      // 只有 moveto 的子路径
+      for (let i = 0; i < segs.length; i++) {
+        if (segs[i].type !== 'M') continue;
+        const next = segs[i + 1];
+        if (next && next.type !== 'M') continue;
+        if (!fatal) {
+          warns.push(makeDiag('lone-moveto', 'warning', segs[i].range[0], { end: segs[i].range[1], segmentIndex: segs[i].index }));
+        }
+      }
+
+      const all = warns.slice();
+      if (fatal) all.push(fatal);
+      all.sort((a, b) => a.start - b.start);
+
+      result.segments = segs;
+      result.diagnostics = all;
+      result.error = fatal || null;
+      result.subpathCount = subIndex + 1;
+      result.consumedTo = fatal ? lastGoodEnd : src.length;
+      return result;
+    }
+
+    // ===== DBG-4. 几何：圆弧端点参数 → 圆心参数（SVG 2 F.6.5）=====
+    const TWO_PI = Math.PI * 2;
+
+    function angleBetween(ux, uy, vx, vy) {
+      const dot = ux * vx + uy * vy;
+      const len = Math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy));
+      let a = Math.acos(Math.max(-1, Math.min(1, len === 0 ? 1 : dot / len)));
+      if (ux * vy - uy * vx < 0) a = -a;
+      return a;
+    }
+
+    function arcSolve(seg) {
+      if (seg._arc) return seg._arc;
+      const p0 = seg.start, p1 = seg.end;
+      const src = seg.arc || { rx: 0, ry: 0, rotation: 0, largeArc: false, sweep: false };
+      let rx = Math.abs(src.rx), ry = Math.abs(src.ry);
+      let out;
+      if (p0.x === p1.x && p0.y === p1.y) {
+        out = { kind: 'skip' };
+      } else if (rx === 0 || ry === 0) {
+        out = { kind: 'line' };
+      } else {
+        const phi = (((src.rotation % 360) + 360) % 360) * Math.PI / 180;
+        const cp = Math.cos(phi), sp = Math.sin(phi);
+        const dx = (p0.x - p1.x) / 2, dy = (p0.y - p1.y) / 2;
+        const x1 = cp * dx + sp * dy;
+        const y1 = -sp * dx + cp * dy;
+        let scaled = false, scale = 1;
+        const lambda = (x1 * x1) / (rx * rx) + (y1 * y1) / (ry * ry);
+        if (lambda > 1) { scale = Math.sqrt(lambda); rx *= scale; ry *= scale; scaled = true; }
+        const rx2 = rx * rx, ry2 = ry * ry;
+        const num = rx2 * ry2 - rx2 * y1 * y1 - ry2 * x1 * x1;
+        const den = rx2 * y1 * y1 + ry2 * x1 * x1;
+        const sign = src.largeArc === src.sweep ? -1 : 1;
+        const co = den === 0 ? 0 : sign * Math.sqrt(Math.max(0, num / den));
+        const cxp = co * rx * y1 / ry;
+        const cyp = co * -ry * x1 / rx;
+        const center = {
+          x: cp * cxp - sp * cyp + (p0.x + p1.x) / 2,
+          y: sp * cxp + cp * cyp + (p0.y + p1.y) / 2
+        };
+        const theta1 = angleBetween(1, 0, (x1 - cxp) / rx, (y1 - cyp) / ry);
+        let delta = angleBetween((x1 - cxp) / rx, (y1 - cyp) / ry, (-x1 - cxp) / rx, (-y1 - cyp) / ry);
+        if (!src.sweep && delta > 0) delta -= TWO_PI;
+        if (src.sweep && delta < 0) delta += TWO_PI;
+        out = { kind: 'ellipse', center, rx, ry, phi, theta1, delta, scaled, scale };
+      }
+      seg._arc = out;
+      return out;
+    }
+
+    function arcPoint(g, t) {
+      const c = Math.cos(t), s = Math.sin(t);
+      const cp = Math.cos(g.phi), sp = Math.sin(g.phi);
+      return {
+        x: g.center.x + g.rx * cp * c - g.ry * sp * s,
+        y: g.center.y + g.rx * sp * c + g.ry * cp * s
+      };
+    }
+
+    function arcDeriv(g, t) {
+      const c = Math.cos(t), s = Math.sin(t);
+      const cp = Math.cos(g.phi), sp = Math.sin(g.phi);
+      return {
+        x: -g.rx * cp * s - g.ry * sp * c,
+        y: -g.rx * sp * s + g.ry * cp * c
+      };
+    }
+
+    function inArc(theta, g, eps) {
+      const e = eps == null ? 1e-9 : eps;
+      let u = (theta - g.theta1) % TWO_PI;
+      if (u < 0) u += TWO_PI;
+      return g.delta >= 0 ? u <= g.delta + e : (TWO_PI - u) <= -g.delta + e;
+    }
+
+    // ===== DBG-5. 曲线求值与导数 =====
+    function cubicPoint(a, b, c, d, t) {
+      const u = 1 - t;
+      return {
+        x: u * u * u * a.x + 3 * u * u * t * b.x + 3 * u * t * t * c.x + t * t * t * d.x,
+        y: u * u * u * a.y + 3 * u * u * t * b.y + 3 * u * t * t * c.y + t * t * t * d.y
+      };
+    }
+    function cubicDeriv(a, b, c, d, t) {
+      const u = 1 - t;
+      return {
+        x: 3 * u * u * (b.x - a.x) + 6 * u * t * (c.x - b.x) + 3 * t * t * (d.x - c.x),
+        y: 3 * u * u * (b.y - a.y) + 6 * u * t * (c.y - b.y) + 3 * t * t * (d.y - c.y)
+      };
+    }
+    function quadPoint(a, b, c, t) {
+      const u = 1 - t;
+      return {
+        x: u * u * a.x + 2 * u * t * b.x + t * t * c.x,
+        y: u * u * a.y + 2 * u * t * b.y + t * t * c.y
+      };
+    }
+    function quadDeriv(a, b, c, t) {
+      const u = 1 - t;
+      return {
+        x: 2 * u * (b.x - a.x) + 2 * t * (c.x - b.x),
+        y: 2 * u * (b.y - a.y) + 2 * t * (c.y - b.y)
+      };
+    }
+
+    function segPoint(seg, t) {
+      switch (seg.type) {
+        case 'M': return { x: seg.end.x, y: seg.end.y };
+        case 'C': case 'S': return cubicPoint(seg.start, seg.c1, seg.c2, seg.end, t);
+        case 'Q': case 'T': return quadPoint(seg.start, seg.ctrl, seg.end, t);
+        case 'A': {
+          const g = arcSolve(seg);
+          if (g.kind === 'ellipse') return arcPoint(g, g.theta1 + g.delta * t);
+          return { x: seg.start.x + (seg.end.x - seg.start.x) * t, y: seg.start.y + (seg.end.y - seg.start.y) * t };
+        }
+        default: {
+          const a = seg.start;
+          return { x: a.x + (seg.end.x - a.x) * t, y: a.y + (seg.end.y - a.y) * t };
+        }
+      }
+    }
+
+    function segDeriv(seg, t) {
+      switch (seg.type) {
+        case 'M': return { x: 0, y: 0 };
+        case 'C': case 'S': return cubicDeriv(seg.start, seg.c1, seg.c2, seg.end, t);
+        case 'Q': case 'T': return quadDeriv(seg.start, seg.ctrl, seg.end, t);
+        case 'A': {
+          const g = arcSolve(seg);
+          if (g.kind !== 'ellipse') return { x: seg.end.x - seg.start.x, y: seg.end.y - seg.start.y };
+          const d = arcDeriv(g, g.theta1 + g.delta * t);
+          return { x: d.x * g.delta, y: d.y * g.delta };
+        }
+        default: return { x: seg.end.x - seg.start.x, y: seg.end.y - seg.start.y };
+      }
+    }
+
+    // ===== DBG-6. 弧长：8 点 Gauss-Legendre 求积 + 自适应二分 =====
+    const GL_X = [-0.9602898564975363, -0.7966664774136267, -0.525532409916329, -0.1834346424956498,
+      0.1834346424956498, 0.525532409916329, 0.7966664774136267, 0.9602898564975363];
+    const GL_W = [0.1012285362903763, 0.2223810344533745, 0.3137066458778873, 0.362683783378362,
+      0.362683783378362, 0.3137066458778873, 0.2223810344533745, 0.1012285362903763];
+
+    function integrate(f, a, b) {
+      const half = (b - a) / 2, mid = (a + b) / 2;
+      let sum = 0;
+      for (let i = 0; i < GL_X.length; i++) sum += GL_W[i] * f(mid + half * GL_X[i]);
+      return sum * half;
+    }
+
+    function refine(f, a, b, whole, tol, depth) {
+      const mid = (a + b) / 2;
+      const left = integrate(f, a, mid);
+      const right = integrate(f, mid, b);
+      if (depth <= 0 || Math.abs(left + right - whole) <= tol) return left + right;
+      return refine(f, a, mid, left, tol / 2, depth - 1) + refine(f, mid, b, right, tol / 2, depth - 1);
+    }
+
+    function arcLength(speed, a, b, tol) {
+      if (b === a) return 0;
+      const whole = integrate(speed, a, b);
+      return refine(speed, a, b, whole, Math.max(tol || 1e-9, 1e-12 * Math.abs(whole)), 14);
+    }
+
+    function segLength(seg, tol) {
+      const t = tol == null ? 1e-9 : tol;
+      switch (seg.type) {
+        case 'M': return 0;
+        case 'L': case 'H': case 'V': case 'Z':
+          return Math.hypot(seg.end.x - seg.start.x, seg.end.y - seg.start.y);
+        case 'C': case 'S': {
+          const s = seg;
+          return arcLength(u => { const d = cubicDeriv(s.start, s.c1, s.c2, s.end, u); return Math.hypot(d.x, d.y); }, 0, 1, t);
+        }
+        case 'Q': case 'T': {
+          const s = seg;
+          return arcLength(u => { const d = quadDeriv(s.start, s.ctrl, s.end, u); return Math.hypot(d.x, d.y); }, 0, 1, t);
+        }
+        case 'A': {
+          const g = arcSolve(seg);
+          if (g.kind === 'skip') return 0;
+          if (g.kind === 'line') return Math.hypot(seg.end.x - seg.start.x, seg.end.y - seg.start.y);
+          if (Math.abs(g.rx - g.ry) <= 1e-12 * Math.max(g.rx, g.ry)) return g.rx * Math.abs(g.delta);
+          // delta 可为负（sweep=0），速度被积函数非负，取绝对值保证弧长为正
+          return Math.abs(arcLength(u => { const d = arcDeriv(g, u); return Math.hypot(d.x, d.y); }, g.theta1, g.theta1 + g.delta, t));
+        }
+        default: return 0;
+      }
+    }
+
+    // ===== DBG-7. 包围盒：由曲线极值解析计算，而非采样 =====
+    function newBox() { return { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }; }
+    function addPt(box, p) {
+      if (!p || !isFinite(p.x) || !isFinite(p.y)) return;
+      if (p.x < box.minX) box.minX = p.x;
+      if (p.y < box.minY) box.minY = p.y;
+      if (p.x > box.maxX) box.maxX = p.x;
+      if (p.y > box.maxY) box.maxY = p.y;
+    }
+    function finishBox(box) {
+      return isFinite(box.minX) ? { minX: box.minX, minY: box.minY, maxX: box.maxX, maxY: box.maxY, width: box.maxX - box.minX, height: box.maxY - box.minY } : null;
+    }
+    // 三次曲线导数 roots：A t^2 + B t + C = 0（用数值稳定形式求解）
+    function cubicRoots(p0, p1, p2, p3) {
+      const A = -p0 + 3 * p1 - 3 * p2 + p3;
+      const B = 2 * (p0 - 2 * p1 + p2);
+      const C = p1 - p0;
+      const out = [];
+      const mag = Math.max(Math.abs(A), Math.abs(B), Math.abs(C));
+      if (mag === 0) return out;
+      // 等距控制点（常见于描图/矢量化输出）会让二阶差 A 被舍入成 0，退化为一阶求根；
+      // 此时 B 同样接近 0，-C/B 会落在几百亿量级，必须和主分支一样过滤到 (0,1)，
+      // 否则越界根代入贝塞尔公式得到 1e21+ 的坐标，把包围盒与取景彻底冲垮
+      if (Math.abs(A) <= 1e-12 * mag) {
+        if (Math.abs(B) > 1e-12 * mag) out.push(-C / B);
+        return out.filter(t => t > 0 && t < 1);
+      }
+      const disc = B * B - 4 * A * C;
+      if (disc < 0) return out;
+      const sq = Math.sqrt(disc);
+      const q = -0.5 * (B + (B >= 0 ? sq : -sq));
+      if (q !== 0) out.push(q / A);
+      if (q !== 0) out.push(C / q);
+      else out.push(-B / (2 * A));
+      return out.filter(t => t > 0 && t < 1);
+    }
+    function quadRoots(p0, p1, p2) {
+      const A = p0 - 2 * p1 + p2;
+      if (A === 0) return [];
+      const t = (p0 - p1) / A;
+      return t > 0 && t < 1 ? [t] : [];
+    }
+
+    function segBounds(box, seg, includeControls) {
+      if (seg.type === 'M') { addPt(box, seg.end); }
+      else {
+        addPt(box, seg.start); addPt(box, seg.end);
+        if (seg.type === 'C' || seg.type === 'S') {
+          for (const t of cubicRoots(seg.start.x, seg.c1.x, seg.c2.x, seg.end.x)) addPt(box, cubicPoint(seg.start, seg.c1, seg.c2, seg.end, t));
+          for (const t of cubicRoots(seg.start.y, seg.c1.y, seg.c2.y, seg.end.y)) addPt(box, cubicPoint(seg.start, seg.c1, seg.c2, seg.end, t));
+          if (includeControls) { addPt(box, seg.c1); addPt(box, seg.c2); }
+        } else if (seg.type === 'Q' || seg.type === 'T') {
+          for (const t of quadRoots(seg.start.x, seg.ctrl.x, seg.end.x)) addPt(box, quadPoint(seg.start, seg.ctrl, seg.end, t));
+          for (const t of quadRoots(seg.start.y, seg.ctrl.y, seg.end.y)) addPt(box, quadPoint(seg.start, seg.ctrl, seg.end, t));
+          if (includeControls) addPt(box, seg.ctrl);
+        } else if (seg.type === 'A') {
+          const g = arcSolve(seg);
+          if (g.kind === 'ellipse') {
+            const cp = Math.cos(g.phi), sp = Math.sin(g.phi);
+            const tx = Math.atan2(-g.ry * sp, g.rx * cp);
+            const ty = Math.atan2(g.ry * cp, g.rx * sp);
+            [tx, tx + Math.PI, ty, ty + Math.PI].forEach(th => { if (inArc(th, g, 1e-9)) addPt(box, arcPoint(g, th)); });
+          }
+        }
+      }
+    }
+
+    function boundsOf(segments, includeControls) {
+      const box = newBox();
+      for (const s of segments) segBounds(box, s, includeControls);
+      return finishBox(box);
+    }
+
+    // 检查模式取景：退化 bbox（单点 / 零宽 / 零高）也要给出可用的 viewBox，
+    // 否则会沿用上一条路径的取景与标记比例；无 bbox 时回到默认画布。
+    function viewBoxOf(b, baseSize) {
+      const fallback = { box: [0, 0, 600, 600], unit: 1 };
+      if (!b) return fallback;
+      const cx = b.minX + b.width / 2, cy = b.minY + b.height / 2;
+      const span = Math.max(b.width, b.height);
+      // 下限 1e-3：保证 viewBox 宽高与按 unit 计算的标记半径不会被格式化舍成 0
+      const size = (!isFinite(span) || span <= 0) ? Math.max(baseSize || 60, 1e-3)
+        : Math.max(span * 1.24, 1e-3);
+      if (!isFinite(size) || !isFinite(cx) || !isFinite(cy)) return fallback;
+      return { box: [cx - size / 2, cy - size / 2, size, size], unit: size / 600 };
+    }
+
+    // 手动缩放：把 viewBox 盒 [x,y,w,h] 按倍率 k 缩放，anchor 缺省为视口中心，
+    // 锚点在缩放后保持屏幕位置不变（与 Yqnn/svg-path-editor 的 zoomViewPort 同构）
+    function zoomBox(box, k, anchor) {
+      const x = box[0], y = box[1], w = box[2], h = box[3];
+      if (!isFinite(x) || !isFinite(y) || !isFinite(w) || !isFinite(h) || w <= 0 || h <= 0
+        || !isFinite(k) || k <= 0) return [x, y, w, h];
+      // 下限 1e-3：viewBox 宽或高被舍成 0 会直接禁用整个 <svg> 的渲染（与 viewBoxOf 同一约定）
+      const kk = Math.max(k, 1e-3 / Math.max(w, h));
+      const ax = anchor && isFinite(anchor.x) ? anchor.x : x + w / 2;
+      const ay = anchor && isFinite(anchor.y) ? anchor.y : y + h / 2;
+      return [ax + (x - ax) * kk, ay + (y - ay) * kk, w * kk, h * kk];
+    }
+
+    // 绕 (cx,cy) 旋转 angle 度：SVG 的 y 轴向下，故正角为顺时针，与 transform="rotate()" 同向。
+    // 0° 短路返回原值，供“角度盘回到起手角度”做无损还原（不引入浮点/取整误差）
+    function rotPt(x, y, cx, cy, angle) {
+      if (!isFinite(x) || !isFinite(y) || !isFinite(cx) || !isFinite(cy) || !isFinite(angle)) return { x, y };
+      const a = angle * Math.PI / 180;
+      if (a === 0) return { x, y };
+      const cos = Math.cos(a), sin = Math.sin(a);
+      const dx = x - cx, dy = y - cy;
+      return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos };
+    }
+
+    // ===== DBG-8. 摘要指标 =====
+    function metricsOf(segments, includeControls) {
+      const box = newBox();
+      const lengths = [];
+      const subpaths = [];
+      let total = 0, drawing = 0;
+      for (const seg of segments) {
+        const len = segLength(seg);
+        lengths.push(len);
+        total += len;
+        segBounds(box, seg, includeControls);
+        let sp = subpaths[subpaths.length - 1];
+        if (!sp || sp.index !== seg.subpath) {
+          sp = { index: seg.subpath, start: seg.type === 'M' ? seg.end : seg.start, end: seg.end, closed: false, segmentCount: 0, length: 0 };
+          subpaths.push(sp);
+        }
+        sp.end = seg.end;
+        sp.length += len;
+        if (seg.type !== 'M') { sp.segmentCount += 1; drawing += 1; }
+        if (seg.closes) sp.closed = true;
+      }
+      const withSegments = subpaths.filter(s => s.segmentCount > 0);
+      const closedCount = withSegments.filter(s => s.closed).length;
+      let closedState = 'empty';
+      if (withSegments.length) {
+        closedState = closedCount === withSegments.length ? 'closed' : (closedCount === 0 ? 'open' : 'mixed');
+      }
+      return {
+        segmentCount: segments.length, drawingCount: drawing,
+        subpaths: withSegments, closedState, closedCount,
+        bounds: finishBox(box), length: total, lengths,
+        start: segments.length ? segments[0].end : null,
+        end: segments.length ? segments[segments.length - 1].end : null
+      };
+    }
+
+    // ===== DBG-9. 规范化输出 =====
+    function fmt(v, prec) {
+      let n = Number(v);
+      if (!isFinite(n)) n = 0;
+      // 完整精度：不取整，用最短可往返形式输出（有几位小数保留几位）
+      if (prec === 'full') return String(n);
+      let s = n.toFixed(prec);
+      // toFixed 在 |n| >= 1e21 时退化为指数形式，此时剥尾零会改变数值（1.2e+30 → 1.2e+3）
+      if (!/e/i.test(s) && s.indexOf('.') >= 0) s = s.replace(/0+$/, '').replace(/\.$/, '');
+      if (s === '-0' || s === '') s = '0';
+      return s;
+    }
+
+    function normalize(segments, opt) {
+      const o = opt || {};
+      const prec = o.precision == null ? 3 : o.precision;
+      const relMode = o.mode === 'relative', keepSrc = o.mode === 'source';
+      const spacing = o.spacing || 'space';
+      const out = [];
+      let cur = { x: 0, y: 0 };
+      let subStart = { x: 0, y: 0 };
+      const N = v => fmt(v, prec);
+      // 由已换算到当前坐标系偏移的点生成 token
+      const l1 = a => [{ s: N(a.x) }, { s: N(a.y) }];
+      const l2 = (a, b) => [{ s: N(a.x) }, { s: N(a.y) }, { s: N(b.x) }, { s: N(b.y) }];
+      const l3 = (a, b, c) => l2(a, b).concat([{ s: N(c.x) }, { s: N(c.y) }]);
+      // tokens 上用 _next 传递命令执行后的新当前点
+      const next = (box, p) => { box._next = p; return box; };
+
+      function emit(letter, tokens) {
+        // tokens: [{ s, flag }]；空参数命令（Z）只需输出字母本身
+        if (!tokens.length) { out.push(letter); cur = { x: tokens._next.x, y: tokens._next.y }; return; }
+        let body = '';
+        for (let i = 0; i < tokens.length; i++) {
+          const tk = tokens[i].s;
+          if (i === 0) { body = tk; continue; }
+          const prevFlag = tokens[i - 1].flag;
+          let sep;
+          if (spacing === 'comma') sep = ',';
+          else if (spacing === 'space') sep = ' ';
+          // 紧凑：负号天然可分隔；标志位严格占 1 字符，其后恒可粘连，
+          // 而标志之前必须分隔（否则旋转角会与标志粘成一个数）
+          else sep = (tk.charAt(0) === '-' || prevFlag) ? '' : ' ';
+          body += sep + tk;
+        }
+        const lead = spacing === 'space' ? letter + ' ' : letter;
+        out.push(lead + body);
+        cur = { x: tokens._next.x, y: tokens._next.y };
+      }
+
+      for (const seg of segments) {
+        const from = cur;
+        // 保持原样：逐段沿用作者的大小写（seg.relative 对隐式坐标对也正确继承自 M/m）
+        const rel = keepSrc ? !!seg.relative : relMode;
+        const D = p => rel ? { x: p.x - from.x, y: p.y - from.y } : { x: p.x, y: p.y };
+        switch (seg.type) {
+          case 'M': case 'L': {
+            const letter = rel ? (seg.type === 'M' ? 'm' : 'l') : seg.type;
+            const d = D(seg.end);
+            if (seg.type === 'M') subStart = { x: seg.end.x, y: seg.end.y };
+            emit(letter, next(l1(d), seg.end));
+            break;
+          }
+          case 'H': case 'V': {
+            if (o.expandHV) {
+              const letter = rel ? 'l' : 'L';
+              const d = D(seg.end);
+              emit(letter, next(l1(d), seg.end));
+            } else {
+              const isH = seg.type === 'H';
+              const letter = rel ? (isH ? 'h' : 'v') : seg.type;
+              const box = next([{ s: N(isH ? D(seg.end).x : D(seg.end).y) }], seg.end);
+              emit(letter, box);
+            }
+            break;
+          }
+          case 'C': {
+            const box = next(l3(D(seg.c1), D(seg.c2), D(seg.end)), seg.end);
+            emit(rel ? 'c' : 'C', box);
+            break;
+          }
+          case 'S': {
+            if (o.expandS) {
+              const box = next(l3(D(seg.c1), D(seg.c2), D(seg.end)), seg.end);
+              emit(rel ? 'c' : 'C', box);
+            } else {
+              const box = next(l2(D(seg.c2), D(seg.end)), seg.end);
+              emit(rel ? 's' : 'S', box);
+            }
+            break;
+          }
+          case 'Q': {
+            const box = next(l2(D(seg.ctrl), D(seg.end)), seg.end);
+            emit(rel ? 'q' : 'Q', box);
+            break;
+          }
+          case 'T': {
+            if (o.expandT) {
+              const box = next(l2(D(seg.ctrl), D(seg.end)), seg.end);
+              emit(rel ? 'q' : 'Q', box);
+            } else {
+              const box = next([{ s: N(D(seg.end).x) }, { s: N(D(seg.end).y) }], seg.end);
+              emit(rel ? 't' : 'T', box);
+            }
+            break;
+          }
+          case 'A': {
+            // 保留作者给出的半径（取绝对值），半径不足放大属于告警而非改写
+            const d = D(seg.end);
+            const box = [
+              { s: N(Math.abs(seg.arc.rx)) }, { s: N(Math.abs(seg.arc.ry)) }, { s: N(seg.arc.rotation) },
+              { s: seg.arc.largeArc ? '1' : '0', flag: true },
+              { s: seg.arc.sweep ? '1' : '0', flag: true },
+              { s: N(d.x) }, { s: N(d.y) }
+            ];
+            emit(rel ? 'a' : 'A', next(box, seg.end));
+            break;
+          }
+          default: {
+            const letter = rel ? 'z' : 'Z';
+            emit(letter, next([], subStart));
+          }
+        }
+      }
+
+      return out.join(spacing === 'compact' ? '' : ' ');
+    }
+
+    // ===== DBG-9b. 圆弧 → 三次贝塞尔近似（normalize 展开 A 与 toCommands 重建节点共用；
+    // 标准近似：alpha = 4/3·tan(Δ/4)）=====
+    function arcToCubics(seg) {
+      const g = arcSolve(seg);
+      if (g.kind !== 'ellipse') return [{ type: 'L', x: seg.end.x, y: seg.end.y }];
+      const pieces = Math.max(1, Math.ceil(Math.abs(g.delta) / (Math.PI / 2)));
+      const step = g.delta / pieces;
+      const out = [];
+      let t0 = g.theta1;
+      for (let i = 0; i < pieces; i++) {
+        const t1 = t0 + step;
+        const alpha = (4 / 3) * Math.tan(step / 4);
+        const p0 = arcPoint(g, t0), p3 = arcPoint(g, t1);
+        const d0 = arcDeriv(g, t0), d1 = arcDeriv(g, t1);
+        out.push({
+          type: 'C',
+          x1: p0.x + alpha * d0.x, y1: p0.y + alpha * d0.y,
+          x2: p3.x - alpha * d1.x, y2: p3.y - alpha * d1.y,
+          x: p3.x, y: p3.y
+        });
+        t0 = t1;
+      }
+      return out;
+    }
+
+    // 对外白名单：dbg.test.mjs 与 PART C 只消费这里导出的符号，新增接口请显式列入
+    return {
+      parsePath, normalize, metricsOf, boundsOf, viewBoxOf, zoomBox, rotPt, arcSolve, segPoint, segDeriv, segLength,
+      arcToCubics, fmt, DIAG_TEXT, ARITY, PARAMS, CMD_LETTERS
+    };
+  })();
+
+  // ============================================================
+  // PART C：调试器 DOM 交互层（纯逻辑在上述 DBG IIFE 内，可脱离浏览器单独校验）
+  //
+  // 本层建立并维护「同源模型」：dbgSource 文本 ↔ state.commands 节点只有一个真源，
+  // 所有变更出口（文本/预设/拖拽/追增/旋转/撤销）都收敛到 applySource；依赖脚本 1 的
+  // 顶层符号（state / renderCanvas / buildPathString / PRESETS / playTone / snapVal 等）。
+  //
+  // 分节目录（与维护对应，编号即文中 ===== C.N ===== 标记）：
+  //   C.0 基础工具与状态 —— $ / U / fc / fv / node / el / ui（取景与选中态）/ hi（历史栈）/ C（配色）
+  //   C.1 取景 —— desiredView / applyView / applyChrome / compensate（手动取景保护见回归点 10）
+  //   C.2 手动缩放 —— setView 收口 / zoomBy / zoomFit / 滚轮缩放（均只改 viewBox，不动数据）
+  //   C.3 诊断列表 —— renderDiagnostics（空输入提示优先，见回归点 3）
+  //   C.4 摘要指标 —— renderSummary（弧长取 r.metrics，不就地重算）
+  //   C.5 命令表 —— renderTable 及行内编辑/删除（序列化回写 d 源，keepView，见回归点 15）
+  //   C.6 叠加绘制 —— drawActive 唯一入口（emph 判定见叠加开关作用域约定）
+  //   C.7 文本→节点 —— toCommands（唯一允许写 state.commands 的转换）
+  //   C.8 主流程 —— applySource / schedule 防抖 / renderCanvas 包装层（编辑器↔调试器唯一耦合点，回归点 11）
+  //   C.9 操作记录与撤销/重做 —— pushHistory / historyGoto / renderHistory
+  //  C.10 事件绑定 —— 输入/快捷键/预设捕获拦截（回归点 12）/叠加开关/缩放按钮
+  //  C.11 画布→命令表双向联动 —— nearestSegmentIndex 点选段
+  //  C.12 在选中段之后追增 —— pendingAdd 待点选 / insertClose（⚠ pendingAdd 声明必须早于末尾首屏 applySource，否则踩 TDZ）
+  //  C.13 首屏初始化 —— 灌 d 源 → applySource(true)
+  // ============================================================
+  (function () {
+    // ===== C.0 基础工具与状态 =====
+    const $ = id => document.getElementById(id);
+    const sourceEl = $('dbgSource');
+    if (!sourceEl) return;
+
+    const NS = 'http://www.w3.org/2000/svg';
+    const svgRoot = $('mainSvg');
+    const underlay = $('dbgUnderlay');
+    const overlay = $('dbgOverlay');
+    // 三张调试卡均固定显示，不再按路径有无隐现；空路径下的占位文案由
+    // renderTable / renderDetail 各自负责，卡片集合因此已移除
+    const DEFAULT_VIEW = { box: [0, 0, 600, 600], unit: 1 };
+
+    // 单一真源：d 源文本 ↔ 编辑器节点，任何一侧变化都会同步到另一侧，
+    // 不再有“检查视图 / 编辑视图”二套呈现
+    const ui = { result: null, active: -1, pinned: -1, unit: 1, zoom: 1, normalized: '', syncing: false, timer: 0, autoView: '', wheelBeepTimer: 0 };
+    // 操作记录/撤销栈：快照统一取 d 源文本（单一真源），index 指向当前状态，cap 后丢弃最旧
+    const hi = { entries: [], index: -1, hint: '', limit: 60, mergeMs: 700, lastTs: 0, open: false };
+    const C = {
+      hi: '#fbbf24', anchor: '#38bdf8', dim: 'rgba(148,163,184,0.6)',
+      c1: '#f87171', c2: '#fb923c', quad: '#c084fc', reflect: '#34d399', arc: '#a78bfa'
+    };
+
+    const U = () => ui.unit || 1;
+    const fc = v => DBG.fmt(v, 2);   // 仅用于面板文字展示
+    // 视图量（viewBox / 标记半径 / 字号）不能用 2 位小数：小路径会被舍成 0，
+    // 而 viewBox 宽或高为 0 会直接禁用整个 <svg> 的渲染
+    const fv = v => {
+      const n = Number(v);
+      if (!isFinite(n)) return '0';
+      const a = Math.abs(n);
+      return a >= 1000 ? n.toFixed(2) : (a >= 1 ? n.toFixed(4) : n.toFixed(8));
+    };
+    const pt = p => `${fv(p.x)},${fv(p.y)}`;
+
+    function node(name, attrs, parent) {
+      const n = document.createElementNS(NS, name);
+      for (const k in attrs) n.setAttribute(k, attrs[k]);
+      (parent || overlay).appendChild(n);
+      return n;
+    }
+    function clear(n) { while (n && n.firstChild) n.removeChild(n.firstChild); }
+    function el(tag, cls, text, parent) {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      if (parent) parent.appendChild(n);
+      return n;
+    }
+    function box(p) { return `${fc(p.x)} ${fc(p.y)}`; }
+
+    // ===== 线段自身的 d（选中高亮用；圆弧走贝塞尔近似，避免标志位歧义）=====
+    function segPathD(seg) {
+      const s = seg.start, e = seg.end;
+      const P = p => `${fv(p.x)} ${fv(p.y)}`;
+      switch (seg.type) {
+        case 'M': return `M ${P(e)}`;
+        case 'C': case 'S': return `M ${P(s)} C ${P(seg.c1)} ${P(seg.c2)} ${P(e)}`;
+        case 'Q': case 'T': return `M ${P(s)} Q ${P(seg.ctrl)} ${P(e)}`;
+        case 'A': {
+          const cubics = DBG.arcToCubics(seg);
+          if (cubics.length && cubics[0].type === 'C') {
+            return `M ${P(s)} ` + cubics.map(c => `C ${c.x1} ${c.y1} ${c.x2} ${c.y2} ${c.x} ${c.y}`).join(' ');
+          }
+          return `M ${P(s)} L ${P(e)}`;
+        }
+        default: return `M ${P(s)} L ${P(e)}`;
+      }
+    }
+
+    // ===== C.1 取景：由路径包围盒决定，而不是由“模式”决定 =====
+    // force=true：文本或预设变了，重新判断要不要自适应；force=false：编辑器交互（拖拽等），
+    // 只在内容越出当前视野时才动视图，否则拖一下跳一下；但若用户已手动缩放/平移过
+    // （当前 viewBox ≠ 最近一次自动取景写入的 ui.autoView），编辑器交互绝不自动跳回——
+    // 放大就是为了精确拖拽个别点，越界重取景只适用于纯自动取景状态
+    const viewKey = () => { const v = svgRoot.viewBox.baseVal; return `${v.x} ${v.y} ${v.width} ${v.height}`; };
+
+    function desiredView(b, force) {
+      if (!b) return DEFAULT_VIEW;
+      const span = Math.max(b.width, b.height);
+      if (!force) {
+        const v = svgRoot.viewBox.baseVal, cur = v && v.width ? v : { x: 0, y: 0, width: 600, height: 600 };
+        const m = Math.max(cur.width, cur.height) * 0.04;
+        const covered = b.minX >= cur.x - m && b.minY >= cur.y - m
+          && b.maxX <= cur.x + cur.width + m && b.maxY <= cur.y + cur.height + m;
+        return covered ? null : DBG.viewBoxOf(b);
+      }
+      // 内容能完整落在 0–600 且不算小：保留编辑器原生视图（网格与坐标轴才有意义）
+      const fits = b.minX >= 0 && b.minY >= 0 && b.maxX <= 600 && b.maxY <= 600;
+      return (fits && span >= 240) ? DEFAULT_VIEW : DBG.viewBoxOf(b);
+    }
+
+    function applyView(segments, force) {
+      const v = desiredView(DBG.boundsOf(segments, false), force);
+      if (!v) return;                       // 保持当前视野
+      // 手动缩放（setView）/平移（脚本 1 直写 viewBox）都会使当前取景偏离 autoView；
+      // 此时 force=false 的越界重取景不再执行，否则拖一下控制点就把用户调好的视图拽回去
+      if (!force && ui.autoView && viewKey() !== ui.autoView) return;
+      ui.unit = v.unit;
+      ui.zoom = v.box[2] / 600;
+      svgRoot.setAttribute('viewBox', v.box.map(fv).join(' '));
+      ui.autoView = viewKey();              // 以 baseVal 回读为凭，与 viewKey 同一坐标系才能比较
+      applyChrome();
+    }
+
+    // 坐标轴按 0–600 用户坐标绘制：放大取景后不再对应实际范围，随取景隐退。
+    // 网格按屏幕像素绘制（CSS background，与 viewBox 无关），放大后依旧能对齐像素格子，
+    // 因此只看「显示辅助网格」开关，不随取景缩放自动隐退（否则小坐标路径会被误认为没有网格）
+    function applyChrome() {
+      const zoomed = Math.abs(ui.zoom - 1) > 1e-6;
+      $('axisGroup').style.display = zoomed ? 'none' : '';
+      const canvasBox = $('canvasContainer');
+      const gridOn = $('gridVisibleCheck').checked;
+      canvasBox.classList.toggle('canvas-grid', gridOn);
+      canvasBox.classList.toggle('canvas-grid-major', gridOn);
+      const v = svgRoot.viewBox.baseVal;
+      $('viewSizeText').textContent = `${fc(v.width)} × ${fc(v.height)}`;
+      compensate();
+    }
+
+    // 编辑器图元的描边宽度与锚点半径写在用户坐标里，放大取景后会变粗变大，按比例回补。
+    // 注意：此处不可用 getComputedStyle——它会对新建元素强制样式计算，确立未补偿的 r 为
+    // before-change style，随后 setAttribute('r',…) 就会触发 CSS transition（拖拽每帧都放大）。
+    // 基准值直接从 CSS 已知：.handle-line stroke-width:1.5，.point-* stroke-width:2。
+    function compensate() {
+      const k = ui.zoom;
+      $('renderedPath').setAttribute('stroke-width', (state.strokeWidth * k).toFixed(3));
+      document.querySelectorAll('#handlesGroup line').forEach(n => {
+        n.style.strokeWidth = (1.5 * k).toFixed(3);
+        n.style.strokeDasharray = `${(3 * k).toFixed(3)} ${(3 * k).toFixed(3)}`;
+      });
+      document.querySelectorAll('#pointsGroup circle').forEach(n => {
+        if (!n.dataset.baseR) n.dataset.baseR = n.getAttribute('r');
+        n.setAttribute('r', (Number(n.dataset.baseR) * k).toFixed(3));
+        n.style.strokeWidth = (2 * k).toFixed(3);
+      });
+      // 按取景比例更新 hover 时的 r（CSS 自定义属性，避免伪类覆盖已补偿的 attribute）
+      svgRoot.style.setProperty('--r-anchor-hover', (7 * k).toFixed(3));
+      svgRoot.style.setProperty('--r-ctrl-hover', (6 * k).toFixed(3));
+    }
+
+    // ===== C.2 手动缩放（画布右下角三图标）：只改 viewBox，不动 d 源与节点 =====
+    // 步长对齐参考实现（Yqnn/svg-path-editor）：放大 ×0.9 / 缩小 ÷0.9（相对 viewBox 尺寸）
+    const ZOOM_STEP = 0.9;
+    function setView(box) {
+      ui.unit = box[2] / 600;
+      ui.zoom = box[2] / 600;
+      svgRoot.setAttribute('viewBox', box.map(fv).join(' '));
+      ui.autoView = viewKey();   // 与 applyView 同一坐标系回读对齐：缩放也算手动取景，
+                                 // 触发“编辑器交互不越界重取景”保护（见 applyView 注释）
+      applyChrome();
+      drawActive();          // 叠加层图元半径/字号依赖 U()，缩放后立即重绘
+    }
+    function zoomBy(k) {
+      const v = svgRoot.viewBox.baseVal;
+      setView(DBG.zoomBox([v.x, v.y, v.width, v.height], k));
+      playSnapSound();
+    }
+    function zoomFit() {
+      // 适配当前窗口 = 按内容包围盒强制重取景（与文本/预设驱动的 force 重算同一规则：
+      // 能落在 0–600 且不算小时回原生视图）；无内容时 desiredView(null) 回退默认画布
+      applyView(ui.result ? ui.result.segments : [], true);
+      drawActive();
+      playSnapSound();
+    }
+
+    // -- C.2b 滚轮缩放：以光标处的用户坐标为锚点（放大就是为了拖某个点，视野要跟着手走）。
+    // 只改 viewBox → 经 setView 收口，不动 d 源与节点；缩放数学在 DBG.zoomBox（含下限保护，
+    // 纯逻辑层已有单测）。passive:false 才能 preventDefault 阻止页面随滚联动
+    mainSvg.addEventListener('wheel', (e) => {
+      if (e.ctrlKey && !e.metaKey) e.preventDefault();   // 触控板捏合手势被浏览器报成 ctrlKey+wheel，同样按缩放处理
+      else if (e.ctrlKey || e.metaKey || e.altKey) return;  // 其余带修饰键的滚动（如 ⌘+滚=系统缩放）让位
+      e.preventDefault();
+      const CTM = mainSvg.getScreenCTM();
+      if (!CTM) return;
+      // 位移限幅：防高分辨率触控板的大 delta 步长失控；指数映射让上/下滚倍率严格互逆
+      const step = Math.max(-120, Math.min(120, e.deltaY));
+      const k = Math.pow(2, step / 240);
+      const v = svgRoot.viewBox.baseVal;
+      setView(DBG.zoomBox([v.x, v.y, v.width, v.height], k, { x: (e.clientX - CTM.e) / CTM.a, y: (e.clientY - CTM.f) / CTM.d }));
+      clearTimeout(ui.wheelBeepTimer);   // 连续滚动只响一次：停手 250ms 后补一声
+      ui.wheelBeepTimer = setTimeout(playSnapSound, 250);
+    }, { passive: false });
+
+    // ===== C.3 诊断列表 =====
+    function renderDiagnostics(r) {
+      const wrap = $('dbgDiagnostics');
+      clear(wrap);
+      // 纯空白输入会零段零诊断，必须按“尚未输入”处理，否则会误报“未发现错误”
+      if (!r.source.trim().length) {
+        el('div', 'text-[11px] text-slate-500', '输入或粘贴 d 属性即实时解析；点上方预设可快速填入路径。', wrap);
+        return;
+      }
+      if (!r.diagnostics.length) {
+        el('div', 'flex items-center gap-1.5 text-[11px] text-emerald-400',
+          '未发现错误：语法与几何参数均合法。', wrap);
+        return;
+      }
+      r.diagnostics.forEach(dg => {
+        const btn = el('button',
+          'w-full text-left text-[11px] leading-snug px-2 py-1.5 rounded-lg border transition cursor-pointer ' +
+          (dg.severity === 'error'
+            ? 'bg-rose-950/40 border-rose-800/60 text-rose-200 hover:bg-rose-900/50'
+            : 'bg-amber-950/30 border-amber-800/50 text-amber-200 hover:bg-amber-900/40'), null, wrap);
+        btn.type = 'button';
+        el('i', 'fa-solid mr-1.5 ' + (dg.severity === 'error' ? 'fa-circle-exclamation' : 'fa-triangle-exclamation'), null, btn);
+        el('span', null, dg.message, btn);
+        btn.addEventListener('click', () => {
+          sourceEl.focus();
+          const to = Math.max(dg.end, dg.start + 1);
+          try { sourceEl.setSelectionRange(dg.start, to); } catch (e) {}
+          playTone(329.63, 'square', 0.06, 0.06);
+          if (dg.segmentIndex != null) selectSegment(dg.segmentIndex, true);
+        });
+      });
+      if (r.error) {
+        el('div', 'text-[10px] text-slate-500 px-1',
+          `与浏览器行为一致：解析在第 ${r.error.start + 1} 个字符处停止，仅渲染之前有效的 ${r.segments.length} 段。`, wrap);
+      }
+    }
+
+    // ===== C.4 摘要指标 =====
+    function statCell(label, value, cls, parent) {
+      const d = el('div', 'rounded-lg bg-slate-950/70 border border-slate-800 px-2 py-1.5 min-w-0', null, parent);
+      el('div', 'text-[10px] text-slate-500', label, d);
+      el('div', 'font-mono text-slate-200 truncate ' + (cls || ''), value, d);
+      return d;
+    }
+    const CLOSED_TEXT = { empty: '无内容', closed: '全部闭合', open: '全部开放', mixed: '开闭混合' };
+
+    // 悬停优先于钉住：钉住只作为“未悬停时的默认选中”，否则点过一次行之后 hover 预览永久失效
+    const effIndex = () => ui.active >= 0 ? ui.active : ui.pinned;
+
+    function renderSummary(r) {
+      const wrap = $('dbgSummary');
+      clear(wrap);
+      const m = r.metrics || DBG.metricsOf(r.segments, false);
+      const b = m.bounds;
+      statCell('命令 / 线段', `${r.commandCount} / ${m.drawingCount}`, 'text-sky-300', wrap);
+      statCell('子路径数', String(m.subpaths.length), 'text-sky-300', wrap);
+      statCell('闭合状态', CLOSED_TEXT[m.closedState] || m.closedState,
+        m.closedState === 'closed' ? 'text-emerald-300' : (m.closedState === 'open' ? 'text-amber-300' : 'text-slate-300'), wrap);
+      statCell('总长度', fc(m.length) + ' u', 'text-emerald-300', wrap);
+      statCell('包围盒', b ? `${fc(b.width)} × ${fc(b.height)}` : '—', null, wrap);
+      statCell('起点 / 终点',
+        m.start ? `${box(m.start)} → ${box(m.end)}` : '—', 'text-[10px]', wrap);
+      if (b) statCell('左上角', box({ x: b.minX, y: b.minY }), 'text-[10px]', wrap);
+      if (b) statCell('右下角', box({ x: b.maxX, y: b.maxY }), 'text-[10px]', wrap);
+    }
+
+    // ===== C.5 命令表 =====
+    // 命令行可直接编辑：参数是输入框、行尾可删除；任何改动都回写 d 源并重绘
+    // 行数列/命令列压缩到刚好容纳（序号位数 / 单个命令字母），腾出宽度给参数区，使 6 参数的 C 命令能占满一行
+    const GRID = 'grid grid-cols-[1.3rem_1.5rem_1fr_1.4rem] gap-1 items-start';
+    const HEADS = ['#', '命令', '参数（可编辑）', ''];
+    // 数值 → 文本：保留解析精度（最多 6 位小数）又去掉多余的尾零，仅用于回写 d 源
+    const numStr = v => {
+      const n = Number(v);
+      return isFinite(n) ? String(Math.round(n * 1e6) / 1e6) : '0';
+    };
+    // 段数组 → d 文本：用解析后的命令（implicit 的 M→L 已归位）配合相对标志还原，几何无损
+    function serializeSegments(segs) {
+      return segs.map(s => {
+        const letter = s.relative ? s.type.toLowerCase() : s.type;
+        return s.params.length ? letter + ' ' + s.params.map(numStr).join(' ') : letter;
+      }).join(' ');
+    }
+    // 提交：写回 d 源 → 全量重解析重绘（文本始终是唯一真源）
+    // keepView=true：命令表只改数据不改视口——重建节点但跳过取景重算，保持用户手动
+    // 放大/平移后的 viewBox。若走 force 重取景，放大后调数值会把视图拉回自适应（“跳回”）。
+    function commitSegments(segs) {
+      historyHint('命令表编辑');
+      sourceEl.value = serializeSegments(segs);
+      applySource(true, true, true);
+    }
+    function renderTable(r) {
+      const wrap = $('dbgCommandTable');
+      clear(wrap);
+      const head = el('div', GRID + ' px-2 py-1 text-[10px] text-slate-500 '
+        + 'bg-slate-950/80 border-b border-slate-800 sticky top-0', null, wrap);
+      HEADS.forEach((h, i) => el('span', i === 2 ? 'text-left' : 'text-center', h, head));
+      // 卡片常驻后空表不再被 hidden 遮住，给一行说明避免看起来像坏了
+      if (!r.segments.length) {
+        el('div', 'px-2 py-2 text-[10px] text-slate-500', '（暂无命令：d 源为空，或首个命令即有语法错误）', wrap);
+        return;
+      }
+      r.segments.forEach(seg => {
+        const row = el('div', 'dbg-row ' + GRID + ' px-2 py-1 text-[10px] font-mono cursor-pointer '
+          + 'border-b border-slate-800/60 hover:bg-slate-800/40', null, wrap);
+        row.dataset.index = String(seg.index);
+        el('span', 'text-slate-500 text-center leading-5', String(seg.index), row);
+        el('span', 'text-center leading-5 ' + (seg.relative ? 'text-purple-300' : 'text-sky-300'), seg.source, row);
+
+        // 参数区：每个数值一个小号 number 输入，change 时局部拷贝改动后整段回写
+        const pwrap = el('div', 'flex flex-wrap gap-1 min-w-0', null, row);
+        if (!seg.params.length) el('span', 'text-slate-500 leading-5', '闭合至起点', pwrap);
+        seg.params.forEach((v, pos) => {
+          const inp = el('input', 'w-11 bg-slate-900 border border-slate-700 rounded px-1 py-0.5 '
+            + 'text-center text-[10px] font-mono text-slate-200 focus:border-sky-500 outline-none', null, pwrap);
+          inp.type = 'number';
+          inp.step = 'any';
+          inp.value = numStr(v);
+          inp.title = seg.type + ' 参数 #' + (pos + 1);
+          inp.addEventListener('click', e => e.stopPropagation());
+          inp.addEventListener('change', () => {
+            const nv = parseFloat(inp.value);
+            if (!isFinite(nv)) { inp.value = numStr(v); return; }   // 空/非法输入回退，不提交
+            const segs = r.segments.map(s => Object.assign({}, s, { params: s.params.slice() }));
+            segs[seg.index].params[pos] = nv;
+            commitSegments(segs);
+          });
+        });
+
+        // 删除：起点（index 0）不可删；删除后至少保留 2 段，否则提示并拦截
+        const delCell = el('div', 'text-center leading-5', null, row);
+        if (seg.index === 0) {
+          delCell.classList.add('text-slate-700');
+          delCell.textContent = '·';
+          delCell.title = '起点不可删除';
+        } else {
+          const del = el('button', 'text-slate-500 hover:text-rose-400 transition', null, delCell);
+          del.type = 'button';
+          del.title = '删除该命令';
+          el('i', 'fa-solid fa-trash-can', null, del);
+          del.addEventListener('click', e => {
+            e.stopPropagation();
+            if (r.segments.length <= 2) { showToast('至少需保留 2 条命令'); return; }
+            commitSegments(r.segments.filter(s => s.index !== seg.index));
+          });
+        }
+
+        row.addEventListener('mouseenter', () => { ui.active = seg.index; drawActive(); });
+        row.addEventListener('mouseleave', () => { ui.active = -1; drawActive(); });
+        row.addEventListener('click', e => { if (e.target.closest('input,button')) return; selectSegment(seg.index, true); });
+      });
+      markRows();
+    }
+    function selectSegment(index, pin) {
+      if (pin) ui.pinned = ui.pinned === index ? -1 : index;
+      else ui.active = index;
+      markRows();
+      drawActive();
+    }
+    function markRows() {
+      const cur = effIndex();
+      document.querySelectorAll('#dbgCommandTable .dbg-row').forEach(row => {
+        const on = Number(row.dataset.index) === cur;
+        // 选中行用高亮琥珀（与画布选中段 C.hi=#fbbf24 同色系）：深底 + 内描边环 + 文字提亮，醒目又不与“红色=删除/危险”混淆
+        row.classList.toggle('bg-amber-500/25', on);
+        row.classList.toggle('ring-1', on);
+        row.classList.toggle('ring-inset', on);
+        row.classList.toggle('ring-amber-400/70', on);
+        row.classList.toggle('text-amber-100', on);
+      });
+    }
+    function currentSegment() {
+      const r = ui.result;
+      const i = effIndex();
+      return r && r.segments[i] ? r.segments[i] : null;
+    }
+    function renderDetail() {
+      const wrap = $('dbgSegmentDetail');
+      clear(wrap);
+      const seg = currentSegment();
+      if (!seg) {
+        el('div', 'text-slate-500', '悬停或点击命令表行查看线段细节。', wrap);
+        return;
+      }
+      const line = (t, cls) => el('div', 'font-mono ' + (cls || 'text-slate-300'), t, wrap);
+      const m = ui.result && ui.result.metrics;
+      line(`#${seg.index} ${seg.source}${seg.implicit ? '（隐式重复）' : ''} · 子路径 ${seg.subpath}`, 'text-slate-200');
+      if (seg.type !== 'M') line(`起 ${box(seg.start)} → 终 ${box(seg.end)} · 长 ${fc(m ? m.lengths[seg.index] : DBG.segLength(seg))}`);
+      else line(`落点 ${box(seg.end)} · 不产生长度`, 'text-slate-400');
+      if (seg.c1) line(`c1 ${box(seg.c1)} · c2 ${box(seg.c2)}`, 'text-rose-300');
+      if (seg.ctrl) line(`ctrl ${box(seg.ctrl)}`, 'text-purple-300');
+      if (seg.reflected) line('c1/ctrl 由上一段控制点关于当前点反射得到（S/T 隐式点）', 'text-emerald-300');
+      if (seg.type === 'A') {
+        const g = DBG.arcSolve(seg);
+        line(`rx ${fc(seg.arc.rx)} · ry ${fc(seg.arc.ry)} · rot ${fc(seg.arc.rotation)}° · 大弧 ${seg.arc.largeArc ? 1 : 0} · 扫描 ${seg.arc.sweep ? 1 : 0}`);
+        if (g.kind === 'ellipse') {
+          const deg = r => (r * 180 / Math.PI);
+          line(`圆心 ${box(g.center)} · φ ${fc(deg(g.phi))}° · θ ${fc(deg(g.theta1))}° → ${fc(deg(g.theta1 + g.delta))}°`, 'text-violet-300');
+          if (g.scaled) line(`半径不足，已按 ×${fc(g.scale)} 放大`, 'text-amber-300');
+        } else line(g.kind === 'line' ? '半径为 0，按直线段处理' : '起止点重合，不绘制', 'text-amber-300');
+      }
+    }
+
+    // ===== C.6 叠加绘制 =====
+    function opts() {
+      return {
+        ctrl: $('dbgOptCtrl').checked,
+        reflect: $('dbgOptReflect').checked, arc: $('dbgOptArc').checked,
+        labels: $('dbgOptLabels').checked, all: $('dbgOptAll').checked
+      };
+    }
+    function dot(p, r, fill, stroke) {
+      node('circle', { cx: fv(p.x), cy: fv(p.y), r: fv(r), fill, stroke: stroke || 'rgba(2,6,23,0.8)', 'stroke-width': fv(0.6 * U()) }, overlay);
+    }
+    function leader(a, b, color, dash, w) {
+      node('line', { x1: fv(a.x), y1: fv(a.y), x2: fv(b.x), y2: fv(b.y), stroke: color,
+        'stroke-width': w || 1, 'vector-effect': 'non-scaling-stroke',
+        'stroke-dasharray': dash || '', 'stroke-linecap': 'round' }, overlay);
+    }
+    function label(p, text, color) {
+      const t = node('text', { x: fv(p.x + 5 * U()), y: fv(p.y - 5 * U()), fill: color || '#94a3b8',
+        'font-size': fv(11 * U()), 'font-family': 'ui-monospace, monospace' }, overlay);
+      t.textContent = text;
+    }
+    function arrowAt(seg, color) {
+      const p = DBG.segPoint(seg, 0.5), d = DBG.segDeriv(seg, 0.5);
+      const L = Math.hypot(d.x, d.y);
+      if (!L) return;
+      const ux = d.x / L, uy = d.y / L, n = 7 * U();
+      const tips = [
+        { x: p.x + ux * n, y: p.y + uy * n },
+        { x: p.x - ux * n * 0.2 - uy * n * 0.5, y: p.y - uy * n * 0.2 + ux * n * 0.5 },
+        { x: p.x - ux * n * 0.2 + uy * n * 0.5, y: p.y - uy * n * 0.2 - ux * n * 0.5 }
+      ];
+      node('polygon', { points: tips.map(pt).join(' '), fill: color }, overlay);
+    }
+    function drawArcFrame(seg, strong) {
+      const g = DBG.arcSolve(seg);
+      if (g.kind !== 'ellipse') return;
+      const deg = (g.phi * 180 / Math.PI).toFixed(3);
+      node('ellipse', { cx: fv(g.center.x), cy: fv(g.center.y), rx: fv(g.rx), ry: fv(g.ry),
+        transform: `rotate(${deg} ${fv(g.center.x)} ${fv(g.center.y)})`, fill: 'none',
+        stroke: strong ? C.arc : 'rgba(167,139,250,0.28)', 'stroke-width': strong ? 1.2 : 1,
+        'vector-effect': 'non-scaling-stroke', 'stroke-dasharray': strong ? '5 4' : '3 5' }, underlay);
+      if (!strong) return;
+      const k = 7 * U();
+      node('line', { x1: fv(g.center.x - k), y1: fv(g.center.y), x2: fv(g.center.x + k), y2: fv(g.center.y),
+        stroke: C.arc, 'stroke-width': 1.2, 'vector-effect': 'non-scaling-stroke' }, underlay);
+      node('line', { x1: fv(g.center.x), y1: fv(g.center.y - k), x2: fv(g.center.x), y2: fv(g.center.y + k),
+        stroke: C.arc, 'stroke-width': 1.2, 'vector-effect': 'non-scaling-stroke' }, underlay);
+      dot(g.center, 2.6 * U(), C.arc);
+      leader(g.center, seg.start, 'rgba(167,139,250,0.5)', '3 4', 1);
+      leader(g.center, seg.end, 'rgba(167,139,250,0.5)', '3 4', 1);
+      arrowAt(seg, C.arc);
+    }
+
+    function drawActive() {
+      clear(overlay); clear(underlay);
+      const r = ui.result;
+      // 零段也要刷新明细区：否则清空 d 源后 dbgSegmentDetail 会残留上一条路径的内容
+      if (!r || !r.segments.length) { renderDetail(); return; }
+      const o = opts(), segs = r.segments;
+      const cur = currentSegment();
+      // 每个叠加开关勾选后即对“全部相应段”生效（淡色），聚焦段或“全量标记”开启时用强样式。
+      // 不再要求先选中某段才可见，修复“点击控制点/反射/圆弧无反应”。
+      const emph = s => o.all || s === cur;
+
+      // 控制点：为所有 C/S/Q/T 段画“锚点↔控制点”连线，并按 c1/c2 分色（编辑器原手柄同为靛红不易区分）
+      if (o.ctrl) {
+        segs.forEach(s => {
+          const strong = emph(s);
+          if (s.type === 'C' || s.type === 'S') {
+            leader(s.start, s.c1, strong ? C.c1 : 'rgba(248,113,113,0.5)', '4 3', strong ? 1.2 : 1);
+            leader(s.end, s.c2, strong ? C.c2 : 'rgba(251,146,60,0.5)', '4 3', strong ? 1.2 : 1);
+            dot(s.c1, (strong ? 3.4 : 2.4) * U(), C.c1);
+            dot(s.c2, (strong ? 3.4 : 2.4) * U(), C.c2);
+          } else if (s.type === 'Q' || s.type === 'T') {
+            leader(s.start, s.ctrl, strong ? C.quad : 'rgba(192,132,252,0.5)', '4 3', strong ? 1.2 : 1);
+            leader(s.end, s.ctrl, strong ? C.quad : 'rgba(192,132,252,0.5)', '4 3', strong ? 1.2 : 1);
+            dot(s.ctrl, (strong ? 3.4 : 2.4) * U(), C.quad);
+          }
+        });
+      }
+
+      // 圆弧椭圆：为所有 A 段反解整椭圆；聚焦段或全量时再补圆心十字、半径连线与方向箭头
+      if (o.arc) segs.forEach(s => { if (s.type === 'A') drawArcFrame(s, emph(s)); });
+
+      // 隐式反射点：为所有带反射关系的 S/T 段画出“上一段控制点 → 本段隐式控制点”的对称示意（绿色菱形）
+      if (o.reflect) {
+        segs.forEach(s => {
+          if (!s.reflected) return;
+          const shown = s.type === 'S' ? s.c1 : s.ctrl;
+          const prev = segs[s.index - 1];
+          const src = prev ? (prev.c2 || prev.ctrl) : null;
+          if (!shown || !src) return;
+          const strong = emph(s);
+          leader(src, shown, C.reflect, '2 3', strong ? 1.2 : 1);
+          leader(s.start, shown, 'rgba(52,211,153,0.45)', '', 1);
+          if (strong) { dot(src, 2.8 * U(), 'rgba(52,211,153,0.55)'); label(shown, '隐式反射点', C.reflect); }
+          node('rect', { x: fv(shown.x - 3 * U()), y: fv(shown.y - 3 * U()), width: fv(6 * U()), height: fv(6 * U()),
+            transform: `rotate(45 ${fv(shown.x)} ${fv(shown.y)})`, fill: 'none', stroke: C.reflect,
+            'stroke-width': strong ? 1.4 : 1, 'vector-effect': 'non-scaling-stroke' }, overlay);
+        });
+      }
+
+      // 命令编号：在每个非 M 段中点标注段序号（与命令表 # 列一致），始终作用于全部段
+      if (o.labels) {
+        const focus = cur ? cur.index : -1;
+        segs.forEach(s => {
+          if (s.type === 'M') return;
+          label(DBG.segPoint(s, 0.5), String(s.index), s.index === focus ? C.hi : 'rgba(148,163,184,0.75)');
+        });
+      }
+
+      // 选中段本体：无论上述开关如何，聚焦段都用高亮色描出并标注两端锚点
+      if (cur) {
+        node('path', { d: segPathD(cur), fill: 'none', stroke: C.hi, 'stroke-width': 3.2,
+          'vector-effect': 'non-scaling-stroke', 'stroke-linecap': 'round' }, overlay);
+        if (cur.type !== 'M') dot(cur.start, 3.4 * U(), '#0ea5e9', C.hi);
+        dot(cur.end, 4.2 * U(), C.hi, 'rgba(2,6,23,0.9)');
+      }
+
+      renderDetail();
+    }
+
+    // ===== C.7 文本 → 节点：展开成编辑器可表示的指令（A→C、S→C、T→Q、H/V→L）=====
+    const rgbd = v => Math.round(v * 100) / 100;
+    function toCommands(segments) {
+      const cmds = [];
+      for (const seg of segments) {
+        const e = seg.end;
+        if (seg.type === 'M') cmds.push({ type: 'M', x: rgbd(e.x), y: rgbd(e.y) });
+        else if (seg.type === 'Z') cmds.push({ type: 'Z' });
+        else if (seg.type === 'C' || seg.type === 'S') {
+          cmds.push({ type: 'C', x1: rgbd(seg.c1.x), y1: rgbd(seg.c1.y), x2: rgbd(seg.c2.x), y2: rgbd(seg.c2.y), x: rgbd(e.x), y: rgbd(e.y) });
+        } else if (seg.type === 'Q' || seg.type === 'T') {
+          cmds.push({ type: 'Q', x1: rgbd(seg.ctrl.x), y1: rgbd(seg.ctrl.y), x: rgbd(e.x), y: rgbd(e.y) });
+        } else if (seg.type === 'A') {
+          DBG.arcToCubics(seg).forEach(c => cmds.push(
+            c.type === 'C' ? { type: 'C', x1: rgbd(c.x1), y1: rgbd(c.y1), x2: rgbd(c.x2), y2: rgbd(c.y2), x: rgbd(c.x), y: rgbd(c.y) }
+              : { type: 'L', x: rgbd(c.x), y: rgbd(c.y) }));
+        } else cmds.push({ type: 'L', x: rgbd(e.x), y: rgbd(e.y) });
+      }
+      return cmds;
+    }
+
+    // ===== C.8 主流程 =====
+    // rebuild=true：以 d 源文本为准，重新生成可拖拽节点（文本输入 / 预设 / 载入编辑器）
+    // rebuild=false：节点已变，只刷新诊断与叠加，不重建节点（否则会打断正在进行的拖拽）
+    // keepView=true：跳过取景重算，保持当前 viewBox（undo/redo 与命令表编辑用；否则 force 重取景会把用户手动放大的视图拉回自适应）
+    function applySource(rebuild, beep, keepView) {
+      // 文本/预设/命令表/撤销等外部驱动会整体重建数据，旧的“待点选落点”基准（选中段终点）随之失效，一律取消
+      cancelPendingAdd();
+      // 不做 trim：诊断偏移必须与 textarea 原始下标一致，词法器本身会跳过首尾空白
+      const r = DBG.parsePath(sourceEl.value);
+      ui.result = r; ui.active = -1; ui.pinned = -1;
+      r.metrics = DBG.metricsOf(r.segments, false);   // 弧长只算一次，摘要/命令表/明细共用
+      if (rebuild) {
+        ui.syncing = true;                            // 回写钩子在同步期间静默，避免自我循环
+        state.commands = toCommands(r.segments);
+        resetRotationDial();                          // 数据整体重建，角度盘语义失效
+        renderCanvas();
+        ui.syncing = false;
+      }
+      if (!keepView) applyView(r.segments, rebuild);  // keepView：撤销/重做与命令表编辑不动视图尺寸与位置
+      pushHistory();                              // 所有变更出口都收敛到本函数，此处即唯一记录点
+      renderDiagnostics(r);
+      renderSummary(r);
+      renderTable(r);
+      drawActive();
+      if (beep) playTone(r.error ? 220 : 659.25, r.error ? 'square' : 'sine', 0.1, 0.09);
+    }
+
+    // 输入与拖拽都走防抖：一次拖动会产生几十次 renderCanvas，逐次全量求积会明显掉帧
+    function schedule(rebuild, beep) {
+      clearTimeout(ui.timer);
+      ui.timer = setTimeout(() => applySource(rebuild, beep), 160);
+    }
+
+    // renderCanvas 是编辑器全部变更的统一出口（拖拽 / 追增 / 应用表达式 / 重置），
+    // 包一层即可把几何变化回写成 d 源文本，保持两侧同源
+    const rawRenderCanvas = renderCanvas;
+    renderCanvas = function () {
+      rawRenderCanvas();
+      compensate();                     // 图元每次重建都要按取景比例修正
+      if (ui.syncing) return;
+      // 有语法错误时不回写：避免用有效前缀覆盖用户尚未改完的原文
+      if (ui.result && ui.result.error) return;
+      const text = buildPathString(state.commands);
+      if (sourceEl.value !== text) {
+        sourceEl.value = text;
+        // 编辑器交互（拖拽/追增/应用表达式/重置）都经此回写，默认打标为节点编辑；
+        // 脚本 1 侧有更高语义的入口（如旋转）可预先写 state.editHint 抢用一次
+        historyHint(state.editHint || '编辑节点');
+        state.editHint = '';
+        // “保持原样”模式读 d 源文本，回写后再刷一次代码，避免拖拽后滞后一拍
+        renderCodeOutput();
+      }
+      schedule(false, false);
+    };
+
+    // ===== C.9 操作记录与撤销/重做 =====
+    // 条目在 applySource 尾部统一采集（文本/预设/命令表/编辑器回写都会走到这里）；
+    // 标签由各入口经 historyHint 预置，未预置则按驱动方式给默认名
+    function historyHint(label) { hi.hint = label; }
+    function pushHistory() {
+      const text = sourceEl.value;
+      // 与“当前状态”同文则不记录（撤销/重做跳转后的重解析走这条路：不删条目、不加条目）。
+      // 但游标已在 historyGoto 里前移/后退，面板（计数/高亮/按钮态）必须在这里补刷新，
+      // 否则短路会把 renderHistory 一并短路成“界面停在旧快照”。
+      // 注意比对项是 entries[hi.index] 而非栈顶——回看历史时栈顶是“未来”
+      if (hi.entries[hi.index] && hi.entries[hi.index].text === text) { hi.hint = ''; renderHistory(); return; }
+      const now = Date.now();
+      let label = hi.hint || (hi.entries.length ? '输入路径' : '初始状态');
+      hi.hint = '';
+      // 同名且紧邻（拖拽/连续输入的防抖拆条）合并为一条，保留最新文本与时间
+      const top = hi.entries[hi.entries.length - 1];
+      if (hi.index === hi.entries.length - 1 && top && top.label === label && now - hi.lastTs <= hi.mergeMs) {
+        top.text = text; top.ts = now;
+      } else {
+        // 这里只会在“当前状态==栈顶”时到达（非栈顶的同文差异已在上面短路，异文则说明
+        // 用户回看历史后又真正编辑）：截断分叉，未来的条目丢弃
+        if (hi.index < hi.entries.length - 1) hi.entries.length = hi.index + 1;
+        hi.entries.push({ text, label, ts: now });
+        if (hi.entries.length > hi.limit) hi.entries.shift();
+        hi.index = hi.entries.length - 1;
+      }
+      hi.lastTs = now;
+      renderHistory();
+    }
+    function fmtTs(ts) {
+      const d = new Date(ts);
+      const p = n => String(n).padStart(2, '0');
+      return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+    function historyGoto(i) {
+      if (i < 0 || i >= hi.entries.length || i === hi.index) return;
+      hi.index = i;
+      const text = hi.entries[i].text;
+      if (sourceEl.value !== text) {
+        sourceEl.value = text;
+        applySource(true, false, true);   // 回到历史点：重建节点但保持当前视图（不重取景）；文本与当前一致时不产生新条目
+      } else {
+        renderHistory();            // 无变化（如脏值被回写过）也要刷新面板高亮
+      }
+      playSnapSound();
+    }
+    const undo = () => historyGoto(hi.index - 1);
+    const redo = () => historyGoto(hi.index + 1);
+    function renderHistory() {
+      $('dbgUndoBtn').disabled = hi.index <= 0;
+      $('dbgRedoBtn').disabled = hi.index >= hi.entries.length - 1;
+      $('dbgHistoryCount').textContent = `${hi.index + 1} / ${hi.entries.length}`;
+      let currentRow = null;
+      const list = $('dbgHistoryList');
+      clear(list);
+      // 时间正序：最新在下；当前项高亮，可点击跳到任意历史状态；刷新后滚到当前项
+      hi.entries.forEach((en, i) => {
+        const row = el('button', 'w-full text-left px-2.5 py-1.5 flex items-baseline gap-2 border-b border-slate-700/40 last:border-0 transition cursor-pointer ' +
+          (i === hi.index ? 'bg-sky-950/60 text-sky-200' : 'text-slate-300 hover:bg-slate-700/50'), null, list);
+        row.type = 'button';
+        el('span', 'font-mono text-[10px] text-slate-500 shrink-0', fmtTs(en.ts), row);
+        el('span', 'shrink-0', en.label, row);
+        const prev = el('span', 'font-mono text-[10px] text-slate-500 truncate', en.text.trim() || '（空）', row);
+        prev.title = en.text;
+        row.addEventListener('click', () => historyGoto(i));
+        if (i === hi.index) currentRow = row;
+      });
+      if (currentRow) currentRow.scrollIntoView({ block: 'nearest' });
+    }
+
+    // ===== C.10 事件绑定 =====
+    // 输入即解析（防抖），不再需要“解析检查”按钮；⌘/Ctrl + Enter 可立即应用
+    sourceEl.addEventListener('input', () => schedule(true, false));
+    sourceEl.addEventListener('keydown', e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); historyHint('立即应用'); applySource(true, true); }
+    });
+    // 全局撤销/重做快捷键：含 d 源输入框（原生 textarea undo 与同源模型互相覆盖，统一走历史栈）
+    window.addEventListener('keydown', e => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo(); }
+    });
+    // Delete/Backspace 快捷键：删除当前选中段（悬停 > 钉住，与追增按钮同一 effIndex 语义），
+    // 出口与命令表行尾垃圾桶按钮相同（commitSegments → 回写 d 源并入历史、keepView 不动视图），
+    // 守卫也一致：起点(index 0)不可删、删除后至少保留 2 段。
+    // 焦点在输入框/textarea（d 源、命令表参数、数字框）时一律让位原生文字删除，不抢占；
+    // 其余场景 Backspace 的默认行为（页面后退）也一并吞掉。
+    // 删除成功后 applySource(rebuild) 会把 ui.active/ui.pinned 归零，不会留下错位选中。
+    window.addEventListener('keydown', e => {
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      e.preventDefault();
+      const seg = currentSegment();
+      if (!seg) { showToast('请先在画布或命令表中选中一条路径'); playTone(329.63, 'square', 0.06, 0.06); return; }
+      if (seg.index === 0) { showToast('起点不可删除'); playTone(329.63, 'square', 0.06, 0.06); return; }
+      if (ui.result.segments.length <= 2) { showToast('至少需保留 2 条命令'); playTone(329.63, 'square', 0.06, 0.06); return; }
+      commitSegments(ui.result.segments.filter(s => s.index !== seg.index));
+      showToast(`已删除 #${seg.index} ${seg.source} 命令`);
+    });
+    // 预设不直接套节点，而是把路径写进 d 源；在捕获阶段拦在编辑器自身的处理之前
+    $('presetButtons').addEventListener('click', e => {
+      const btn = e.target.closest('.preset-btn');
+      if (!btn || !PRESETS[btn.dataset.preset]) return;
+      e.preventDefault();
+      e.stopPropagation();
+      historyHint(`载入预设「${btn.innerText.trim()}」`);
+      sourceEl.value = buildPathString(PRESETS[btn.dataset.preset]);
+      applySource(true, false);
+      playAddSound();
+      showToast(`已将「${btn.innerText.trim()}」写入 d 源`);
+    }, true);
+    ['dbgOptCtrl', 'dbgOptReflect', 'dbgOptArc', 'dbgOptLabels', 'dbgOptAll']
+      .forEach(id => $(id).addEventListener('change', () => { drawActive(); playSnapSound(); }));
+
+    // ===== C.11 画布 → 命令表反向联动：点选画布上最近的段，选中并高亮对应命令行 =====
+    // 对每段等距采样若干点，取到点击处（用户坐标）最近的段；距离超过当前视野 4% 视为点空，不改选中
+    function nearestSegmentIndex(p) {
+      const r = ui.result;
+      if (!r || !r.segments.length) return null;
+      const vb = svgRoot.viewBox.baseVal;
+      const th = (vb && vb.width ? vb.width : 600) * 0.04;
+      const th2 = th * th, N = 24;
+      let best = null, bestD = Infinity;
+      r.segments.forEach(seg => {
+        if (seg.type === 'M') {
+          // moveto 零长度：只在点击几乎落在其落点（子路径起点）上时命中，使“M 起点”可被选中后追增
+          const d = (seg.end.x - p.x) * (seg.end.x - p.x) + (seg.end.y - p.y) * (seg.end.y - p.y);
+          if (d < bestD) { bestD = d; best = seg.index; }
+          return;
+        }
+        for (let i = 0; i <= N; i++) {
+          const q = DBG.segPoint(seg, i / N);
+          const d = (q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y);
+          if (d < bestD) { bestD = d; best = seg.index; }
+        }
+      });
+      return bestD <= th2 ? best : null;
+    }
+    function scrollRowIntoView(index) {
+      const row = document.querySelector('#dbgCommandTable .dbg-row[data-index="' + index + '"]');
+      if (row) row.scrollIntoView({ block: 'nearest' });
+    }
+    // 拖拽锚点/控制点的圆归编辑器处理；记录按下点，按下与抬起位移>4px 当作拖拽（避免拖点结束时误选段）
+    let dbgDownPt = null;
+    svgRoot.addEventListener('mousedown', e => { dbgDownPt = { x: e.clientX, y: e.clientY }; });
+    svgRoot.addEventListener('click', e => {
+      if (dbgDownPt && Math.hypot(e.clientX - dbgDownPt.x, e.clientY - dbgDownPt.y) > 4) { dbgDownPt = null; return; }
+      // 追增待点选优先：把落点作为新段终点生成命令，不再走点选段逻辑
+      if (pendingAdd) { placePendingAdd(e); return; }
+      if (e.target.closest('.point-ctrl, .point-ctrl-q')) return;   // 控制点不参与段选中（锚点可点选，含子路径起点 M）
+      const m = svgRoot.getScreenCTM();
+      if (!m) return;
+      const sp = svgRoot.createSVGPoint();
+      sp.x = e.clientX; sp.y = e.clientY;
+      const hit = nearestSegmentIndex(sp.matrixTransform(m.inverse()));
+      if (hit == null) return;
+      ui.active = -1;                                        // 画布点击不受命令表悬停残留影响
+      ui.pinned = hit;
+      markRows();
+      drawActive();
+      scrollRowIntoView(hit);
+      playSnapSound();
+    });
+
+    // 网格开关由编辑器自身处理，注册在其后是为了在放大取景下再按取景状态校正一次
+    $('gridVisibleCheck').addEventListener('change', applyChrome);
+
+    // 手动缩放按钮组：在 canvasContainer 内、svg 外，不会干扰编辑器拖拽与画布点选段
+    $('dbgZoomInBtn').addEventListener('click', () => zoomBy(ZOOM_STEP));
+    $('dbgZoomOutBtn').addEventListener('click', () => zoomBy(1 / ZOOM_STEP));
+    $('dbgZoomFitBtn').addEventListener('click', zoomFit);
+
+    // ===== C.12 在选中段之后追增（画布右下工具列 M/L/C/Q/Z，语义参考 Yqnn/svg-path-editor 的 insert after）=====
+    // 流程：点工具按钮 → 判断是否已选中段（悬停 > 钉住），未选中提示；已选中则取该段终点为新段起点，
+    // 进入“待点选”状态（光标十字 + 引导虚线跟随鼠标）→ 点击画布把落点作为终点生成命令。
+    // Z（闭合）例外：无需落点，直接在选中段之后插一条 Z（回到子路径起点）。
+    // 数据出口仍是 state.commands → renderCanvas（经包装层回写 d 源并入历史），与拖拽/追增同一通路。
+    let pendingAdd = null;                       // { type, start:{x,y}, insertAt }
+    const ADD_PREVIEW = $('dbgAddPreview');
+    const ADD_LABEL = { M: '移动路径', L: '直线', C: '三次贝塞尔', Q: '二次贝塞尔' };
+
+    function clearAddPreview() { if (ADD_PREVIEW) clear(ADD_PREVIEW); }
+    function cancelPendingAdd() {
+      if (!pendingAdd) return;
+      pendingAdd = null;
+      clearAddPreview();
+      svgRoot.classList.remove('add-pending');
+      document.querySelectorAll('.dbg-add-btn').forEach(b => b.classList.remove('add-active'));
+    }
+    // 选中段 → 其后应插入的命令下标：按 toCommands 的展开规则累计（A 展开为多段，其余每段 1 条）。
+    // state.commands 恒等于 toCommands(ui.result.segments)（每次 rebuild 都如此赋值），故下标对齐。
+    function insertIndexAfterSegment(segIndex) {
+      const segs = ui.result ? ui.result.segments : [];
+      let ci = 0;
+      for (let i = 0; i <= segIndex && i < segs.length; i++)
+        ci += segs[i].type === 'A' ? (DBG.arcToCubics(segs[i]).length || 1) : 1;
+      return ci;
+    }
+    // 屏幕事件 → 用户坐标（与点选段、平移同一 CTM 换算）
+    function toUserPoint(e) {
+      const m = svgRoot.getScreenCTM();
+      if (!m) return null;
+      const sp = svgRoot.createSVGPoint();
+      sp.x = e.clientX; sp.y = e.clientY;
+      const p = sp.matrixTransform(m.inverse());
+      return { x: p.x, y: p.y };
+    }
+    function drawAddPreview(cur) {
+      clearAddPreview();
+      if (!pendingAdd) return;
+      const s = pendingAdd.start, P = v => fv(v);
+      // 引导虚线：终点到落点（M 也画出以示意新子路径的落位）
+      node('line', { x1: P(s.x), y1: P(s.y), x2: P(cur.x), y2: P(cur.y),
+        stroke: C.hi, 'stroke-width': 1.5, 'stroke-dasharray': '5 4', 'vector-effect': 'non-scaling-stroke' }, ADD_PREVIEW);
+      node('circle', { cx: P(s.x), cy: P(s.y), r: fv(3.5 * U()), fill: C.hi, stroke: 'rgba(2,6,23,0.9)',
+        'stroke-width': 1, 'vector-effect': 'non-scaling-stroke' }, ADD_PREVIEW);
+      node('circle', { cx: P(cur.x), cy: P(cur.y), r: fv(3.5 * U()), fill: 'rgba(251,191,36,0.35)', stroke: C.hi,
+        'stroke-width': 1, 'vector-effect': 'non-scaling-stroke' }, ADD_PREVIEW);
+    }
+    function beginPendingAdd(type) {
+      const seg = currentSegment();
+      if (!seg) {
+        showToast('请先在画布或命令表中选中一条路径');
+        playTone(329.63, 'square', 0.06, 0.06);
+        return;
+      }
+      pendingAdd = { type, start: { x: seg.end.x, y: seg.end.y }, insertAt: insertIndexAfterSegment(seg.index) };
+      svgRoot.classList.add('add-pending');
+      document.querySelectorAll('.dbg-add-btn').forEach(b => b.classList.toggle('add-active', b.dataset.addType === type));
+      drawAddPreview(pendingAdd.start);        // 起手：落点与起点重合
+      showToast(`点击画布放置${ADD_LABEL[type]}的终点`);
+      playSnapSound();
+    }
+    function placePendingAdd(e) {
+      const p = toUserPoint(e);
+      if (!p) return;
+      const { type, start, insertAt } = pendingAdd;
+      // 落点吸附网格（与拖拽同一 snapVal）并夹在当前取景内，避免点到视野外产生离谱坐标
+      const vb = svgRoot.viewBox.baseVal;
+      const lim = vb && vb.width ? vb : { x: 0, y: 0, width: 600, height: 600 };
+      // 精度随取景走（与拖拽同一 roundTo/pixelStep）：固定 2 位小数在小坐标放大时同样会抹平落点
+      const rz = v => roundTo(v, pixelStep());
+      const ex = rz(Math.max(lim.x, Math.min(lim.x + lim.width, snapVal(p.x))));
+      const ey = rz(Math.max(lim.y, Math.min(lim.y + lim.height, snapVal(p.y))));
+      let newCmd;
+      if (type === 'L') newCmd = { type: 'L', x: ex, y: ey };
+      else if (type === 'C') newCmd = { type: 'C', x1: rz(start.x), y1: rz(start.y), x2: rz(start.x), y2: rz(start.y), x: ex, y: ey };
+      else if (type === 'Q') newCmd = { type: 'Q', x1: rz(start.x), y1: rz(start.y), x: ex, y: ey };
+      else newCmd = { type: 'M', x: ex, y: ey };
+      state.commands.splice(insertAt, 0, newCmd);
+      state.editHint = '追增' + ADD_LABEL[type];   // 给历史条打标，与旋转/编辑节点同一出口
+      cancelPendingAdd();
+      renderCanvas();                            // 经包装层回写 d 源并入历史（rebuild=false，不打断节点）
+      playAddSound();
+      showToast(`已添加${ADD_LABEL[type]}`);
+    }
+    // Z 闭合：不走待点选（无需坐标），直接在选中段之后插入一条 Z（笔尖回到该子路径起点）
+    function insertClose() {
+      const seg = currentSegment();
+      if (!seg) { showToast('请先在画布或命令表中选中一条路径'); playTone(329.63, 'square', 0.06, 0.06); return; }
+      // 之后无内容可闭（M 之后紧接 Z = 空子路径）、该处已是 Z 时不重复插入
+      if (seg.type === 'M') { showToast('起点(M)之后没有可闭合的内容'); playTone(329.63, 'square', 0.06, 0.06); return; }
+      if (seg.type === 'Z') { showToast('该处已是闭合命令'); return; }
+      cancelPendingAdd();                          // 若之前处于 L/C/Q/M 待点选，切到闭合先取消
+      state.commands.splice(insertIndexAfterSegment(seg.index), 0, { type: 'Z' });
+      state.editHint = '追增闭合路径';
+      renderCanvas();                              // 经包装层回写 d 源并入历史
+      playAddSound();
+      showToast('已添加 Z 闭合路径');
+    }
+    // 工具按钮：Z 直接闭合；其余再点同类型 = 取消待点选，否则进入待点选
+    document.querySelectorAll('.dbg-add-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const t = btn.dataset.addType;
+        if (t === 'Z') { insertClose(); return; }
+        if (pendingAdd && pendingAdd.type === t) cancelPendingAdd();
+        else beginPendingAdd(t);
+      });
+    });
+    // 待点选时预览跟随鼠标（独立监听，不影响脚本 1 的拖拽/光标坐标刷新）
+    svgRoot.addEventListener('mousemove', e => {
+      if (!pendingAdd) return;
+      const p = toUserPoint(e);
+      if (p) drawAddPreview(p);
+    });
+    // Esc 取消
+    window.addEventListener('keydown', e => { if (e.key === 'Escape') cancelPendingAdd(); });
+
+    // 操作记录面板：头部伸展/收起（只影响面板自身高度，与画布取景无关）
+    $('dbgHistoryToggle').addEventListener('click', () => {
+      hi.open = !hi.open;
+      $('dbgHistoryList').classList.toggle('hidden', !hi.open);
+      $('dbgHistoryChevron').style.transform = hi.open ? 'rotate(180deg)' : '';
+    });
+    $('dbgUndoBtn').addEventListener('click', undo);
+    $('dbgRedoBtn').addEventListener('click', redo);
+
+    // ===== C.13 首屏初始化：把编辑器默认图形灌进 d 源，之后两侧同源 =====
+    sourceEl.value = buildPathString(state.commands);
+    applySource(true, false);
+    renderDetail();
+  })();
+</script>
+</body>
+</html>
