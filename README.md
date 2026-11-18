@@ -1,7 +1,7 @@
 # SVGPath Helper · 交互式 SVG 路径编辑器与可视化工作台
 
 Edit or create SVG paths in browser: https://SVGPathHelper.pipitu.app/
-<video src="./doc/svgpathhelper-720.mp4" controls width="800"></video>
+<video src="https://res.pipitu.app/os/svgpathhelper/svgpathhelper-720.mp4" controls width="800"></video>
 
 ## 项目简介
 **SVGPath Helper** 是一款纯前端交互式 SVG 路径编辑器与可视化工作台。
